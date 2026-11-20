@@ -68,22 +68,23 @@
       <label class="depth">near <input type="range" min="-75" max="-15" value="-45"> far</label>
     </div>
     <div class="card" data-hand="right">
-      <div class="lbl">RIGHT · speargun</div>
+      <div class="lbl">RIGHT · pole spear</div>
       <div class="pad"></div>
       <label class="depth">near <input type="range" min="-75" max="-15" value="-45"> far</label>
     </div>
   </div>
   <div class="keys">
     Drag a controller to move it · scroll on a pad = near/far · click its buttons · drag thumbsticks.<br>
-    Mouse aims the gun · <kbd>Click</kbd>/<kbd>F</kbd> fire · <kbd>R</kbd>/<kbd>G</kbd> reel · <kbd>WASD</kbd> swim ·
+    Mouse aims the pole spear · hold <kbd>Click</kbd>/<kbd>F</kbd> to pull back, let go to shoot · <kbd>WASD</kbd> swim ·
     <kbd>Space</kbd>/<kbd>C</kbd> up/down · <kbd>Q</kbd>/<kbd>E</kbd> turn · right-drag or arrows look ·
-    <kbd>Z</kbd> sonar · <kbd>X</kbd> light · <kbd>Enter</kbd> restart · <kbd>H</kbd> hide panel
+    <kbd>Z</kbd> sonar · <kbd>X</kbd> light · <kbd>T</kbd> drop tube · <kbd>Y</kbd> tube back · <kbd>Enter</kbd>/<kbd>Esc</kbd> menu / surface · <kbd>H</kbd> hide panel
   </div>
 </div>
 
 <script type="module">
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
 // ================= custom shaders =================
 // Water absorbs colours unevenly: red disappears first, then green, so distant things turn blue.
@@ -193,12 +194,27 @@ float caust(vec2 p){ vec2 i=p; float c=1.0; float inten=0.005;
 }
 
 // ================= seabed =================
+// ---- the open ocean: a big bounded area with 5 zones to explore ----
+const WORLD_R = 110;
+const ZONES = [
+  { name: 'Home Reef',    c: [0, 0],     r: 34 },
+  { name: 'Kelp Forest',  c: [62, -45],  r: 30 },
+  { name: 'Coral Garden', c: [-62, -32], r: 30 },
+  { name: 'The Drop-off', c: [0, 78],    r: 32 },
+  { name: 'Shipwreck',    c: [66, 44],   r: 24 },
+];
+const zoneAt = (x, z) => { let best = null, bd = Infinity; for (const Z of ZONES) { const d = Math.hypot(x - Z.c[0], z - Z.c[1]); if (d < Z.r && d < bd) { bd = d; best = Z; } } return best; };
+const ss = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 function floorH(x, z) {
   const r = Math.hypot(x, z);
-  return 0.35 * Math.sin(x * 0.21) * Math.cos(z * 0.17) + 0.15 * Math.sin(x * 0.63 + z * 0.41) + Math.max(0, r - 30) * 0.4;
+  let h = 0.35 * Math.sin(x * 0.21) * Math.cos(z * 0.17) + 0.15 * Math.sin(x * 0.63 + z * 0.41)
+        + 0.9 * Math.sin(x * 0.045 + 1.3) * Math.cos(z * 0.038);          // big rolling sand dunes
+  h -= ss(56, 64, z) * ss(50, 34, Math.abs(x)) * 9;                       // the Drop-off: seafloor falls away 9 m
+  h += Math.max(0, r - (WORLD_R - 8)) * 0.7;                              // the edge of the area rises up
+  return h;
 }
 {
-  const g = new THREE.PlaneGeometry(160, 160, 120, 120); g.rotateX(-Math.PI / 2);
+  const g = new THREE.PlaneGeometry(240, 240, 180, 180); g.rotateX(-Math.PI / 2);
   const p = g.attributes.position, col = new Float32Array(p.count * 3);
   const a = new THREE.Color(0xd8c08a), b = new THREE.Color(0xa88f5e), c = new THREE.Color();
   for (let i = 0; i < p.count; i++) {
@@ -212,7 +228,7 @@ function floorH(x, z) {
     x.fillStyle = '#ddd'; x.fillRect(0, 0, w, h);
     for (let i = 0; i < 2500; i++) { const v = 170 + Math.random() * 85 | 0; x.fillStyle = `rgb(${v},${v},${v})`; x.fillRect(Math.random() * w, Math.random() * h, 1.5, 1.5); }
   });
-  sand.wrapS = sand.wrapT = THREE.RepeatWrapping; sand.repeat.set(50, 50);
+  sand.wrapS = sand.wrapT = THREE.RepeatWrapping; sand.repeat.set(75, 75);
   const mat = new THREE.MeshStandardMaterial({ map: sand, vertexColors: true });
   addCaustics(mat, true);
   reefRoot.add(new THREE.Mesh(g, mat));
@@ -267,29 +283,62 @@ const rockTops = [];    // homes for lionfish
       }
     }
   };
-  // reef clusters
-  for (let k = 0; k < 9; k++) {
-    const a = rand(0, 6.28), d = rand(5, 25), cx = Math.cos(a) * d, cz = Math.sin(a) * d;
-    for (let i = 0; i < 6; i++) {
-      const R = placeRock(cx + rand(-3, 3), cz + rand(-3, 3), rand(0.6, 2));
-      for (let j = 0; j < 3; j++) addCoral(R.x + rand(-R.s, R.s) * 0.5, R.top - 0.1, R.z + rand(-R.s, R.s) * 0.5, rand(0.8, 1.3));
+  const inZone = (Z, rMax) => { const a = rand(0, 6.28), d = Math.sqrt(Math.random()) * (rMax || Z.r); return [Z.c[0] + Math.cos(a) * d, Z.c[1] + Math.sin(a) * d]; };
+  const cluster = (cx, cz, rocksN, corals, spread = 3, size = [0.6, 2]) => {
+    for (let i = 0; i < rocksN; i++) {
+      const R = placeRock(cx + rand(-spread, spread), cz + rand(-spread, spread), rand(size[0], size[1]));
+      for (let j = 0; j < corals; j++) addCoral(R.x + rand(-R.s, R.s) * 0.5, R.top - 0.1, R.z + rand(-R.s, R.s) * 0.5, rand(0.8, 1.3));
     }
-  }
+  };
+  const [HOME, KELP, GARDEN, DROP, WRECK] = ZONES;
+  // Home Reef: rocky patches with coral on top
+  for (let k = 0; k < 9; k++) { const a = rand(0, 6.28), d = rand(5, 25); cluster(Math.cos(a) * d, Math.sin(a) * d, 6, 3); }
   for (let i = 0; i < 14; i++) { const a = rand(0, 6.28), d = rand(3, 28); placeRock(Math.cos(a) * d, Math.sin(a) * d, rand(0.4, 1.4)); }
   for (let i = 0; i < 70; i++) { const a = rand(0, 6.28), d = rand(2, 28), x = Math.cos(a) * d, z = Math.sin(a) * d; if (Math.hypot(x - SPAWN.x, z - SPAWN.z) > 2.5) addCoral(x, floorH(x, z), z, rand(0.7, 1.2)); }
+  // Coral Garden: packed with coral
+  for (let k = 0; k < 12; k++) { const [x, z] = inZone(GARDEN, 24); cluster(x, z, 4, 6, 2.5); }
+  for (let i = 0; i < 180; i++) { const [x, z] = inZone(GARDEN); addCoral(x, floorH(x, z), z, rand(0.8, 1.6)); }
+  // Kelp Forest: a few boulders (the kelp itself is added below)
+  for (let i = 0; i < 14; i++) { const [x, z] = inZone(KELP); placeRock(x, z, rand(0.8, 2.2)); }
+  // The Drop-off: a wall of big boulders along the edge, scattered rocks below
+  for (let x = -40; x <= 40; x += rand(3, 5)) { const z = 58 + rand(-2, 2); const R = placeRock(x, z, rand(2, 3.6)); if (Math.random() < 0.6) addCoral(R.x, R.top - 0.2, R.z, rand(1, 1.6)); }
+  for (let i = 0; i < 26; i++) { const [x, z] = inZone(DROP, 28); if (z > 62) cluster(x, z, 2, 2, 2, [1, 2.6]); }
+  // between the zones: scattered rocks and coral heads so the open sand isn't empty
+  for (let i = 0; i < 70; i++) { const a = rand(0, 6.28), d = rand(30, WORLD_R - 12), x = Math.cos(a) * d, z = Math.sin(a) * d; if (Math.random() < 0.5) placeRock(x, z, rand(0.5, 1.8)); else addCoral(x, floorH(x, z), z, rand(0.7, 1.3)); }
+  // Shipwreck: an old sunken boat lying tilted in the sand, covered in growth (lionfish love wrecks)
+  {
+    const wx = WRECK.c[0], wz = WRECK.c[1], wy = floorH(wx, wz), rot = 0.6, rust = 0xb07a4e, moss = 0x7f9a5a;
+    const at = (lx, ly, lz) => new THREE.Vector3(lx, ly, lz).applyAxisAngle(UP, rot).add(new THREE.Vector3(wx, wy, wz));
+    const hull = new THREE.Shape(); hull.moveTo(-2.6, -9); hull.lineTo(2.6, -9); hull.lineTo(2.8, 4); hull.quadraticCurveTo(2.4, 8.5, 0, 10); hull.quadraticCurveTo(-2.4, 8.5, -2.8, 4); hull.closePath();
+    const hg = new THREE.ExtrudeGeometry(hull, { depth: 3.2, bevelEnabled: false, curveSegments: 10 }).rotateX(-Math.PI / 2);
+    rockGeos.push(colored(hg, rust, M([wx, wy - 1.2, wz], [0.0, rot, 0.22])));
+    rockGeos.push(colored(new THREE.BoxGeometry(3.4, 2.2, 4), 0x9a7656, M(at(0, 2.6, 3).toArray(), [0, rot, 0.22])));   // wheelhouse
+    rockGeos.push(colored(new THREE.CylinderGeometry(0.22, 0.28, 9, 8), 0x7a6046, M(at(4.5, 0.4, -2).toArray(), [Math.PI / 2 - 0.1, rot, 0.4]))); // fallen mast
+    for (let i = 0; i < 26; i++) { const p = at(rand(-2.5, 2.5), rand(1.6, 2.2), rand(-8, 8)); rockGeos.push(colored(new THREE.SphereGeometry(rand(0.15, 0.4), 6, 4), moss, M(p.toArray()))); } // growth on deck
+    for (let lz = -8; lz <= 8; lz += 1.6) {
+      const p = at(rand(-1.5, 1.5), 1.9, lz);
+      rocks.push({ c: at(0, 0.6, lz), r: 2.4 }); rockTops.push(p, p.clone().add(new THREE.Vector3(rand(-1, 1), 0.3, rand(-1, 1)))); // lots of lionfish homes
+      if (Math.random() < 0.5) addCoral(p.x, p.y - 0.1, p.z, rand(0.7, 1.1));
+    }
+    for (let i = 0; i < 10; i++) { const [x, z] = inZone(WRECK, 14); placeRock(x, z, rand(0.4, 1.2)); }
+  }
 
   const rockMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95, envMapIntensity: 0.35, color: 0xa8a49c }); addCaustics(rockMat);
   reefRoot.add(new THREE.Mesh(mergeGeometries(rockGeos), rockMat));
-  reefRoot.add(new THREE.Mesh(mergeGeometries(coralGeos), new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide })));
+  const coralMat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.75 }); addCaustics(coralMat);
+  reefRoot.add(new THREE.Mesh(mergeGeometries(coralGeos), coralMat));
 }
 
 // ================= kelp (one merged mesh, GPU sway) =================
 {
   const geos = [];
-  for (let p = 0; p < 7; p++) {
-    const a = rand(0, 6.28), d = rand(6, 27), px = Math.cos(a) * d, pz = Math.sin(a) * d;
-    for (let i = 0; i < 10; i++) {
-      const x = px + rand(-2, 2), z = pz + rand(-2, 2), h = rand(2.5, 7);
+  const KZ = ZONES[1];
+  const kelpPatches = [];
+  for (let p = 0; p < 7; p++) { const a = rand(0, 6.28), d = rand(6, 27); kelpPatches.push([Math.cos(a) * d, Math.sin(a) * d, 10, 2, [2.5, 7]]); }
+  for (let p = 0; p < 26; p++) { const a = rand(0, 6.28), d = Math.sqrt(Math.random()) * 26; kelpPatches.push([KZ.c[0] + Math.cos(a) * d, KZ.c[1] + Math.sin(a) * d, 9, 2.5, [6, 13]]); } // the Kelp Forest: tall and dense
+  for (const [px, pz, n, spread, [h0, h1]] of kelpPatches) {
+    for (let i = 0; i < n; i++) {
+      const x = px + rand(-spread, spread), z = pz + rand(-spread, spread), h = rand(h0, h1);
       const g = new THREE.PlaneGeometry(0.2, h, 1, 10); g.translate(0, h / 2, 0);
       const pos = g.attributes.position, aH = new Float32Array(pos.count), aPh = new Float32Array(pos.count), ph = rand(0, 6.28);
       for (let k = 0; k < pos.count; k++) { aH[k] = pos.getY(k) / h; aPh[k] = ph; }
@@ -308,8 +357,8 @@ const rockTops = [];    // homes for lionfish
     return g;
   };
   // sea grass meadows
-  for (let p = 0; p < 16; p++) {
-    const a = rand(0, 6.28), d = rand(3, 27), px = Math.cos(a) * d, pz = Math.sin(a) * d;
+  for (let p = 0; p < 40; p++) {
+    const a = rand(0, 6.28), d = p < 16 ? rand(3, 27) : rand(28, WORLD_R - 15), px = Math.cos(a) * d, pz = Math.sin(a) * d;
     if (Math.hypot(px - SPAWN.x, pz - SPAWN.z) < 3) continue;
     for (let i = 0; i < 55; i++) {
       const x = px + rand(-1.6, 1.6), z = pz + rand(-1.6, 1.6), h = rand(0.22, 0.6);
@@ -318,8 +367,8 @@ const rockTops = [];    // homes for lionfish
     }
   }
   // anemones: a ring of soft tentacles that wave in the current
-  for (let i = 0; i < 18; i++) {
-    const R = rockTops[i % rockTops.length], onRock = i % 2 === 0;
+  for (let i = 0; i < 46; i++) {
+    const R = rockTops[(i * 7) % rockTops.length], onRock = i % 2 === 0;
     const x = onRock ? R.x + rand(-0.4, 0.4) : rand(-25, 25), z = onRock ? R.z + rand(-0.4, 0.4) : rand(-25, 25), y = onRock ? R.y - 0.1 : floorH(x, z);
     const [body, tip] = [[0xc0392b, 0xff9ec7], [0x6c3483, 0xd7bde2], [0x1e8449, 0xabebc6], [0xd35400, 0xfad7a0]][i % 4];
     const ph = rand(0, 6.28);
@@ -345,19 +394,19 @@ const rockTops = [];    // homes for lionfish
 // ================= reef details: starfish, urchins, shells, table corals, pebbles =================
 {
   const parts = [], onFloor = (x, z, lift = 0) => floorH(x, z) + lift;
-  const spot = () => { for (let i = 0; i < 10; i++) { const a = rand(0, 6.28), d = rand(2, 28), x = Math.cos(a) * d, z = Math.sin(a) * d; if (Math.hypot(x - SPAWN.x, z - SPAWN.z) > 2.5) return [x, z]; } return [10, 10]; };
+  const spot = () => { for (let i = 0; i < 10; i++) { const a = rand(0, 6.28), d = Math.random() < 0.4 ? rand(2, 28) : rand(28, WORLD_R - 12), x = Math.cos(a) * d, z = Math.sin(a) * d; if (Math.hypot(x - SPAWN.x, z - SPAWN.z) > 2.5) return [x, z]; } return [10, 10]; };
   // starfish
   const star = new THREE.Shape();
   for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2 + Math.PI / 2, r = i % 2 ? 0.035 : 0.11; i ? star.lineTo(Math.cos(a) * r, Math.sin(a) * r) : star.moveTo(Math.cos(a) * r, Math.sin(a) * r); }
   const starGeo = new THREE.ExtrudeGeometry(star, { depth: 0.015, bevelEnabled: true, bevelThickness: 0.01, bevelSize: 0.012, bevelSegments: 2 }).rotateX(-Math.PI / 2);
   starGeo.deleteAttribute('uv');
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 80; i++) {
     const [x, z] = i % 3 === 0 ? [rockTops[i % rockTops.length].x + rand(-0.3, 0.3), rockTops[i % rockTops.length].z + rand(-0.3, 0.3)] : spot();
     const y = i % 3 === 0 ? rockTops[i % rockTops.length].y - 0.05 : onFloor(x, z, 0.01);
     parts.push(colored(starGeo, [0xe8642c, 0xc0392b, 0x8e44ad, 0xf39c12, 0x2e86c1][i % 5], M([x, y, z], [rand(-0.1, 0.1), rand(0, 6.28), rand(-0.1, 0.1)], [1, 1, 1].map(() => rand(0.7, 1.2)))));
   }
   // sea urchins: dark ball covered in long spines
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 50; i++) {
     const R = rockTops[(i * 3) % rockTops.length], [x, z] = i % 2 ? [R.x + rand(-0.6, 0.6), R.z + rand(-0.6, 0.6)] : spot();
     const y = (i % 2 ? Math.max(onFloor(x, z), R.y - 0.4) : onFloor(x, z)) + 0.03, col = i % 3 ? 0x2b1236 : 0x111122;
     parts.push(colored(new THREE.SphereGeometry(0.05, 10, 8), col, M([x, y, z])));
@@ -368,24 +417,25 @@ const rockTops = [];    // homes for lionfish
     }
   }
   // shells and conches
-  for (let i = 0; i < 45; i++) {
+  for (let i = 0; i < 120; i++) {
     const [x, z] = spot(), y = onFloor(x, z, 0.01), c = [0xf5e6d3, 0xf2c4b6, 0xe8d8b0, 0xffffff][i % 4];
     if (i % 2) parts.push(colored(new THREE.ConeGeometry(0.025, 0.08, 7), c, M([x, y + 0.015, z], [Math.PI / 2, rand(0, 6.28), rand(-0.3, 0.3)])));
     else parts.push(colored(new THREE.SphereGeometry(0.04, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), c, M([x, y - 0.005, z], [0, rand(0, 6.28), 0], [1, 0.35, 0.85])));
   }
   // table corals: flat plates on a short stem
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 30; i++) {
     const R = rockTops[(i * 5 + 2) % rockTops.length], x = R.x + rand(-0.5, 0.5), z = R.z + rand(-0.5, 0.5), y = R.y - 0.1, s = rand(0.6, 1.3);
     const c = [0xc9b27c, 0x8fae6a, 0xd98c8c, 0xa98fc9][i % 4];
     parts.push(colored(new THREE.CylinderGeometry(0.04 * s, 0.06 * s, 0.25 * s, 8), c, M([x, y + 0.12 * s, z])));
     parts.push(colored(new THREE.CylinderGeometry(0.55 * s, 0.38 * s, 0.05, 20), c, M([x, y + 0.26 * s, z], [rand(-0.1, 0.1), 0, rand(-0.1, 0.1)])));
   }
   // pebbles and rubble
-  for (let i = 0; i < 260; i++) {
+  for (let i = 0; i < 650; i++) {
     const [x, z] = spot(), r = rand(0.02, 0.07), v = rand(0.45, 0.8);
     parts.push(colored(new THREE.DodecahedronGeometry(r, 0), new THREE.Color(v, v * 0.95, v * 0.85), M([x, onFloor(x, z, r * 0.3), z], [rand(0, 6), rand(0, 6), 0], [1, rand(0.5, 0.9), 1])));
   }
-  reefRoot.add(new THREE.Mesh(mergeGeometries(parts), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 })));
+  const detailMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 }); addCaustics(detailMat);
+  reefRoot.add(new THREE.Mesh(mergeGeometries(parts), detailMat));
 }
 // deep-water backdrop: bright toward the surface, dark blue below
 const waterDome = new THREE.Mesh(new THREE.SphereGeometry(120, 32, 16), new THREE.ShaderMaterial({
@@ -420,7 +470,7 @@ surfaceTex.wrapS = surfaceTex.wrapT = THREE.RepeatWrapping; surfaceTex.repeat.se
 {
   // the water surface seen from below: a bright "window" of sky straight overhead (Snell's window),
   // mirror-like dark water toward the edges, and moving ripples
-  const s = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), new THREE.ShaderMaterial({
+  const s = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), new THREE.ShaderMaterial({
     side: THREE.DoubleSide, fog: false, depthWrite: false,
     uniforms: { uTime: timeU, deep: { value: new THREE.Color(0x0b4f66) }, sky: { value: new THREE.Color(0xd8f6ff) }, haze: { value: WATER } },
     vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
@@ -538,8 +588,11 @@ function fishShader(mat) {
       float swimPh = dot(modelMatrix[3].xz, vec2(1.7, 2.3));
       float toTail = smoothstep(0.35, -0.5, position.z);
       transformed.x += sin(position.z * 7.0 - uTime * 9.0 + swimPh) * 0.28 * toTail;`);
-    sh.fragmentShader = sh.fragmentShader.replace('#include <fog_fragment>', `{ float rim = pow(1.0 - clamp(abs(dot(normalize(vViewPosition), normal)), 0.0, 1.0), 3.0);
-      gl_FragColor.rgb += vec3(0.22, 0.5, 0.6) * rim * 0.35; }
+    sh.fragmentShader = 'uniform float uTime;\n' + sh.fragmentShader.replace('#include <fog_fragment>', `{ float rim = pow(1.0 - clamp(abs(dot(normalize(vViewPosition), normal)), 0.0, 1.0), 3.0);
+      gl_FragColor.rgb += vec3(0.22, 0.5, 0.6) * rim * 0.35;
+      // scales shimmer with a faint rainbow that shifts as the fish turns
+      vec3 irid = 0.5 + 0.5 * cos(6.2832 * (rim * 1.6 + uTime * 0.05 + vec3(0.0, 0.33, 0.67)));
+      gl_FragColor.rgb += irid * (0.04 + rim * 0.1); }
 #include <fog_fragment>`);
   };
   return mat;
@@ -725,12 +778,25 @@ function buildLion(sp) {
 for (const k in SPECIES) buildFishGeos(SPECIES[k]);
 
 const fishes = [], schools = [];
-function arenaPoint(minY = 0.8, maxY = 7, rMax = 26) {
-  const a = rand(0, 6.28), d = Math.sqrt(Math.random()) * rMax, x = Math.cos(a) * d, z = Math.sin(a) * d;
-  return new THREE.Vector3(x, floorH(x, z) + rand(minY, maxY), z);
+// fish live around the diver: points are picked around fishCenter (where you are), inside the world
+const fishCenter = new THREE.Vector3(0, 0, 9);
+function arenaPoint(minY = 0.8, maxY = 7, rMax = 26, rMin = 0) {
+  for (let t = 0; t < 10; t++) {
+    const a = rand(0, 6.28), d = rMin + Math.sqrt(Math.random()) * (rMax - rMin), x = fishCenter.x + Math.cos(a) * d, z = fishCenter.z + Math.sin(a) * d;
+    if (Math.hypot(x, z) < WORLD_R - 12) return new THREE.Vector3(x, floorH(x, z) + rand(minY, maxY), z);
+  }
+  const x = fishCenter.x * 0.8, z = fishCenter.z * 0.8; return new THREE.Vector3(x, floorH(x, z) + rand(minY, maxY), z);
 }
-function farPoint(minY, maxY) {
-  let p; for (let i = 0; i < 12; i++) { p = arenaPoint(minY, maxY); if (p.distanceTo(head) > 14) break; } return p;
+const farPoint = (minY, maxY) => arenaPoint(minY, maxY, 38, 20); // out of sight in the haze
+function nearHome(minD, maxD) { // a rock (or wreck) top for a lionfish to hover by
+  let best = null, bd = Infinity;
+  for (let t = 0; t < 40; t++) { const h = rockTops[Math.random() * rockTops.length | 0], d = h.distanceTo(fishCenter); if (d >= minD && d <= maxD) return h; if (Math.abs(d - maxD) < bd) { bd = Math.abs(d - maxD); best = h; } }
+  return best;
+}
+function relocateFish(f) { // a fish far behind you reappears somewhere ahead, out of sight
+  if (f.sp.lion) { f.home = nearHome(18, 38); f.g.position.copy(f.home).add(_v1.set(rand(-1, 1), rand(0.3, 1), rand(-1, 1))); pickTarget(f); }
+  else if (!f.school) { f.g.position.copy(farPoint(0.8, f.sp.key === 'grouper' ? 2.5 : 4)); pickTarget(f); }
+  f.vel.set(0, 0, 0);
 }
 // builds one fish model (used for live fish and for the fish shown on the dock)
 function buildFishGroup(sp, variant = Math.random() * 99 | 0) {
@@ -766,13 +832,17 @@ function makeFish(sp, pos, school = null) {
   reefRoot.add(g);
   const f = { g, sp, tail, fans, school, vel: new THREE.Vector3(), target: pos.clone(), retarget: 0, phase: rand(0, 6), state: 'swim', size: sc, variant,
               offset: new THREE.Vector3(rand(-1.2, 1.2), rand(-0.6, 0.6), rand(-1.2, 1.2)), r: sp.radius * sc, home: null };
-  if (sp.lion) f.home = rockTops[Math.random() * rockTops.length | 0];
+  if (sp.lion) f.home = nearHome(2, 30);
   if (school) school.members++;
   fishes.push(f); return f;
 }
 function pickTarget(f) {
   if (f.sp.lion) { f.target.copy(f.home).add(_v1.set(rand(-1.3, 1.3), rand(0.2, 1.2), rand(-1.3, 1.3))); f.retarget = rand(4, 9); }
-  else { f.target.copy(arenaPoint(0.6, f.sp.key === 'grouper' ? 2.5 : 6)); f.retarget = rand(6, 14); }
+  else { // wander around where it is
+    const p = f.g.position, a = rand(0, 6.28), d = rand(4, 14);
+    let x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d; const r = Math.hypot(x, z); if (r > WORLD_R - 14) { x *= (WORLD_R - 14) / r; z *= (WORLD_R - 14) / r; }
+    f.target.set(x, floorH(x, z) + rand(0.6, f.sp.key === 'grouper' ? 2.5 : 6), z); f.retarget = rand(6, 14);
+  }
 }
 function spawnSpecies(key, initial) {
   const sp = SPECIES[key];
@@ -783,7 +853,7 @@ function spawnSpecies(key, initial) {
   }
   if (sp.lion) {
     const f = makeFish(sp, new THREE.Vector3(), null);
-    if (!initial) for (let i = 0; i < 12 && f.home.distanceTo(head) < 12; i++) f.home = rockTops[Math.random() * rockTops.length | 0];
+    if (!initial) f.home = nearHome(18, 38);
     f.g.position.copy(f.home).add(_v1.set(rand(-1, 1), rand(0.3, 1), rand(-1, 1))); pickTarget(f); return f;
   }
   const f = makeFish(sp, initial ? arenaPoint(0.8, 4) : farPoint(0.8, 4)); pickTarget(f); return f;
@@ -795,7 +865,7 @@ function removeFish(f) {
 const respawnQ = [];
 function populate() {
   for (const f of [...fishes]) removeFish(f);
-  schools.length = 0; respawnQ.length = 0;
+  schools.length = 0; respawnQ.length = 0; fishCenter.copy(SPAWN);
   for (const [key, n] of [['tang', 8], ['tang', 8], ['yellowtail', 8]]) schools.push({ sp: SPECIES[key], target: arenaPoint(1.5, 5, 22), timer: rand(3, 8), members: 0, want: n });
   for (const s of schools) for (let i = 0; i < s.want; i++) spawnSpecies(s.sp.key, true);
   for (let i = 0; i < 5; i++) spawnSpecies('parrot', true);
@@ -811,84 +881,202 @@ function cylBetween(a, b, r, mat) {
   const d = b.clone().sub(a), m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, d.length(), 6), mat);
   m.position.copy(a).add(b).multiplyScalar(0.5); m.quaternion.setFromUnitVectors(UP, d.normalize()); return m;
 }
-{ // speargun (points down -Z)
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.52, 10).rotateX(Math.PI / 2), matDark); barrel.position.z = -0.24;
-  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.11, 0.045), matDark); handle.position.set(0, -0.055, 0.02); handle.rotation.x = -0.35;
-  const muzzle = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.03), matYellow); muzzle.position.z = -0.5;
-  const trig = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.025, 0.01), matMetal); trig.position.set(0, -0.022, -0.03);
-  handR.add(barrel, handle, muzzle, trig);
-  for (const s of [-1, 1]) handR.add(cylBetween(new THREE.Vector3(s * 0.027, 0, -0.5), new THREE.Vector3(s * 0.012, 0.016, -0.12), 0.005, matRed));
+// pole spear (Hawaiian sling style): yellow fibreglass pole, red rubber sling loop on the back,
+// stainless 3-prong paralyzer tip on the front. The pole slides through your right hand.
+const POLE = { tipZ: -1.32, backZ: 0.42, holdOff: 0.42 };
+const pole = new THREE.Group(); handR.add(pole);
+const poleShaftMat = new THREE.MeshStandardMaterial({ color: 0xf2c418, roughness: 0.35, metalness: 0.05 });
+const poleGripMat = new THREE.MeshStandardMaterial({ color: 0x23272e, roughness: 0.5 });
+{
+  const yellow = poleShaftMat;
+  const steel = new THREE.MeshStandardMaterial({ color: 0xc8ccd2, metalness: 0.9, roughness: 0.25 });
+  const brass = new THREE.MeshStandardMaterial({ color: 0xc9a24a, metalness: 0.8, roughness: 0.35 });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.0105, 0.0105, POLE.backZ - (-1.12), 12).rotateX(Math.PI / 2), yellow);
+  shaft.position.z = (POLE.backZ + -1.12) / 2; pole.add(shaft);
+  const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.0125, 0.0125, 0.3, 12).rotateX(Math.PI / 2), poleGripMat); grip.position.z = 0.05; pole.add(grip);
+  const endCap = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.03, 12).rotateX(Math.PI / 2), matDark); endCap.position.z = POLE.backZ; pole.add(endCap);
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.0125, 0.011, 0.07, 12).rotateX(Math.PI / 2), brass); collar.position.z = -1.15; pole.add(collar);
+  for (let i = 0; i < 3; i++) { // three prongs spreading slightly, each with a small barb
+    const a = i / 3 * Math.PI * 2 + Math.PI / 2;
+    const from = new THREE.Vector3(Math.cos(a) * 0.005, Math.sin(a) * 0.005, -1.18), to = new THREE.Vector3(Math.cos(a) * 0.02, Math.sin(a) * 0.02, POLE.tipZ);
+    pole.add(cylBetween(from, to, 0.0022, steel));
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.0032, 0.022, 6), steel); tip.position.copy(to); tip.quaternion.setFromUnitVectors(UP, to.clone().sub(from).normalize()); pole.add(tip);
+    pole.add(cylBetween(to.clone().add(new THREE.Vector3(0, 0, 0.012)), to.clone().add(new THREE.Vector3(Math.cos(a) * 0.012, Math.sin(a) * 0.012, 0.035)), 0.0016, steel));
+  }
 }
-const laser = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0.022, -0.6), new THREE.Vector3(0, 0.022, -5)]),
-  new THREE.LineBasicMaterial({ color: 0xff5040, transparent: true, opacity: 0.35 }));
-handR.add(laser);
+// rubber sling: two red strands from the back of the pole to your thumb; they stretch when you pull back
+const bandMat = new THREE.MeshStandardMaterial({ color: 0xc8261e, roughness: 0.6 });
+const bandStrands = [-1, 1].map(() => { const m = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 1, 6), bandMat); handR.add(m); return m; });
+const THUMB = new THREE.Vector3(0, 0.03, 0.03);
+function updateBand() {
+  for (let i = 0; i < 2; i++) {
+    const s = i ? 1 : -1, a = _v1.set(s * 0.009, 0.004, POLE.backZ + pole.position.z), b = _v2.copy(THUMB).setX(s * 0.006);
+    const d = _v3.subVectors(b, a), L = d.length(), m = bandStrands[i];
+    m.position.copy(a).addScaledVector(d, 0.5); m.quaternion.setFromUnitVectors(UP, d.normalize()); m.scale.set(1, L, 1);
+  }
+}
+const laser = new THREE.Mesh(new THREE.CylinderGeometry(0.0015, 0.0015, 2.5, 6, 1, true).rotateX(Math.PI / 2).translate(0, 0, POLE.tipZ - 1.3),
+  new THREE.MeshBasicMaterial({ color: 0xff5040, transparent: true, opacity: 0.35, depthWrite: false, toneMapped: false }));
+pole.add(laser);
+
+// spearguns: built for whichever gun is equipped (band gun, pneumatic, railgun)
+const gunG = new THREE.Group(); handR.add(gunG); gunG.visible = false;
+const gunLaser = new THREE.Mesh(new THREE.CylinderGeometry(0.0015, 0.0015, 4.5, 6, 1, true).rotateX(Math.PI / 2).translate(0, 0, -2.25),
+  new THREE.MeshBasicMaterial({ color: 0xff5040, transparent: true, opacity: 0.4, depthWrite: false, toneMapped: false }));
+function buildGun(G) {
+  while (gunG.children.length) gunG.remove(gunG.children[0]);
+  const body = new THREE.MeshStandardMaterial({ color: G.body, roughness: 0.4, metalness: 0.2 });
+  const accent = new THREE.MeshStandardMaterial({ color: G.accent, roughness: 0.35, metalness: 0.5 });
+  const L = G.len, rB = G.id === 'gun2' ? 0.019 : 0.013;               // the pneumatic gun has a fat air barrel
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(rB, rB, L, 14).rotateX(Math.PI / 2), body); barrel.position.z = -L / 2 + 0.03;
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.11, 0.045), matDark); handle.position.set(0, -0.055, 0.02); handle.rotation.x = -0.35;
+  const trig = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.025, 0.01), matMetal); trig.position.set(0, -0.022, -0.03);
+  const muzzle = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.03, 0.035), accent); muzzle.position.z = -L + 0.02;
+  gunG.add(barrel, handle, trig, muzzle);
+  if (G.id !== 'gun2') for (const s of [-1, 1]) gunG.add(cylBetween(new THREE.Vector3(s * 0.028, 0, -L + 0.02), new THREE.Vector3(s * 0.012, 0.018, -L * 0.35), 0.0055, matRed)); // rubber bands
+  if (G.id === 'gun3') { const rail = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.012, L * 0.9), accent); rail.position.set(0, 0.016, -L / 2); gunG.add(rail); }
+  if (G.id === 'gun2') { const ring = new THREE.Mesh(new THREE.TorusGeometry(0.021, 0.004, 6, 16), accent); ring.position.z = -L * 0.45; gunG.add(ring); }
+  gunLaser.position.set(0, 0.022, -L - 0.1); gunG.add(gunLaser);
+}
 // left hand: lionfish containment tube. Opaque tube, white at the opening fading to red,
 // with a funnel of soft rubber flaps on top. Push the fish through the flaps to stow it.
 const TUBE = { R: 0.075, open: -0.52, back: -0.04 };
 const tubeFlaps = [];
+const tubeG = new THREE.Group(); handL.add(tubeG); // the whole tube, so it can be dropped and picked back up
 let tubeRim;
 {
   const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.1, 10), matDark); grip.rotation.x = -0.6; grip.position.set(0, -0.035, 0.03);
-  handL.add(grip);
+  grip.name = 'gripL'; handL.add(grip);
   const len = TUBE.back - TUBE.open, R = TUBE.R;
-  const tubeTex = canvasTex(512, 512, (x, w, h) => {
-    const g = x.createLinearGradient(0, 0, 0, h); // canvas top = opening end
-    // the white-to-red fade
-    g.addColorStop(0, '#f7f7f5'); g.addColorStop(0.38, '#ecebe9'); g.addColorStop(0.5, '#e9c7c2'); g.addColorStop(0.62, '#df7f76');
-    g.addColorStop(0.75, '#cf2f2b'); g.addColorStop(1, '#a50f18');
-    x.fillStyle = g; x.fillRect(0, 0, w, h);
-    // clean straight rings around the tube (top and bottom trim)
-    x.fillStyle = '#9a9ea2'; x.fillRect(0, 10, w, 6); x.fillRect(0, 24, w, 2);
-    x.fillStyle = '#7a0a10'; x.fillRect(0, h - 26, w, 2); x.fillRect(0, h - 16, w, 6);
-    // lionfish fin-ray graphic: straight lines fanning out from one point
-    x.strokeStyle = '#151515'; x.lineCap = 'round';
-    const cx = w * 0.2, cy = h * 0.42;
-    for (let i = 0; i < 9; i++) { const a = -Math.PI / 2 - 0.8 + i * 0.2; x.lineWidth = 5; x.beginPath(); x.moveTo(cx, cy); x.lineTo(cx + Math.cos(a) * 120, cy + Math.sin(a) * 120); x.stroke(); }
-    // label: straight, running along the length of the tube
-    x.save(); x.translate(w * 0.5, h * 0.5); x.rotate(-Math.PI / 2);
+  // like the real containment tubes: dark grey PVC body, white collars on both ends,
+  // a white label strip running along the length, and a thin cord down the side
+  const tubeTex = canvasTex(512, 512, (x, w, h) => { // canvas: across = around the tube, down = opening -> bottom
+    x.fillStyle = '#454b53'; x.fillRect(0, 0, w, h);
+    for (let i = 0; i < 160; i++) { // worn plastic: fine scratches and scuffs along the length
+      x.strokeStyle = `rgba(${Math.random() < 0.5 ? '255,255,255' : '0,0,0'},${rand(0.03, 0.09)})`; x.lineWidth = rand(0.5, 2);
+      const sx = rand(0, w), sy = rand(0, h); x.beginPath(); x.moveTo(sx, sy); x.lineTo(sx + rand(-6, 6), sy + rand(10, 70)); x.stroke();
+    }
+    // white label strip
+    const lx = w * 0.4, lw = w * 0.2, ly = h * 0.28, lh = h * 0.56;
+    x.fillStyle = '#eef0f0'; x.fillRect(lx, ly, lw, lh);
+    x.strokeStyle = '#151515'; x.lineCap = 'round'; x.lineWidth = 3;
+    for (let i = 0; i < 7; i++) { const a = Math.PI / 2 + 0.6 - i * 0.2; x.beginPath(); x.moveTo(lx + lw * 0.5, ly + 70); x.lineTo(lx + lw * 0.5 + Math.cos(a) * 40, ly + 70 - Math.sin(a) * 50); x.stroke(); }
+    x.save(); x.translate(lx + lw * 0.5, ly + lh * 0.6); x.rotate(-Math.PI / 2);
     x.textAlign = 'center'; x.textBaseline = 'middle';
-    x.font = 'bold 70px Georgia, serif'; x.lineWidth = 6; x.strokeStyle = '#111'; x.strokeText('REEF HUNTER', 0, -16); x.fillStyle = '#d0141c'; x.fillText('REEF HUNTER', 0, -16);
-    x.font = 'bold 24px sans-serif'; x.fillStyle = '#222'; x.fillText('LIONFISH CONTAINMENT', 0, 40); x.restore();
+    x.fillStyle = '#121212'; x.font = 'bold 40px Georgia, serif'; x.fillText('REEF HUNTER', 0, -12);
+    x.font = 'bold 15px sans-serif'; x.fillText('LIONFISH CONTAINMENT', 0, 22); x.restore();
   });
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(R, R, len, 36, 1, true).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: tubeTex, roughness: 0.4 }));
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(R, R, len, 36, 1, true).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: tubeTex, roughness: 0.55 }));
   const inner = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.97, R * 0.97, len, 36, 1, true).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.9, side: THREE.BackSide }));
   body.position.z = inner.position.z = (TUBE.open + TUBE.back) / 2;
-  const cap = new THREE.Mesh(new THREE.CircleGeometry(R, 32), new THREE.MeshStandardMaterial({ color: 0xa8141a, roughness: 0.5, side: THREE.DoubleSide })); cap.position.z = TUBE.back;
-  tubeRim = new THREE.Mesh(new THREE.TorusGeometry(R, 0.009, 8, 36), new THREE.MeshStandardMaterial({ color: 0xbfc3c6, roughness: 0.4, emissive: 0xff8a00, emissiveIntensity: 0 }));
+  const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf0f2f2, roughness: 0.35 });
+  const cap = new THREE.Mesh(new THREE.CircleGeometry(R * 1.07, 32), new THREE.MeshStandardMaterial({ color: 0xe8eaea, roughness: 0.4, side: THREE.DoubleSide })); cap.position.z = TUBE.back - 0.002;
+  for (const [z, l] of [[TUBE.open + 0.035, 0.07], [TUBE.back - 0.03, 0.06]]) { // white collars with a ridge at each edge
+    const collar = new THREE.Mesh(new THREE.CylinderGeometry(R * 1.07, R * 1.07, l, 36, 1, true).rotateX(-Math.PI / 2), whiteMat); collar.position.z = z;
+    tubeG.add(collar);
+    for (const e of [-l / 2, l / 2]) { const ridge = new THREE.Mesh(new THREE.TorusGeometry(R * 1.07, 0.004, 6, 36), whiteMat); ridge.position.z = z + e; tubeG.add(ridge); }
+  }
+  { // thin dark cord down the side
+    const a = Math.PI * 0.62, r = R * 1.02;
+    const [m, L] = rodMatrix(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, TUBE.open + 0.08), new THREE.Vector3(Math.cos(a + 0.35) * r, Math.sin(a + 0.35) * r, TUBE.back - 0.07));
+    const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0022, L, 5), new THREE.MeshStandardMaterial({ color: 0x18191b, roughness: 0.8 }));
+    cord.applyMatrix4(m); tubeG.add(cord);
+  }
+  tubeRim = new THREE.Mesh(new THREE.TorusGeometry(R, 0.009, 8, 36), new THREE.MeshStandardMaterial({ color: 0xf0f2f2, roughness: 0.4, emissive: 0xff8a00, emissiveIntensity: 0 }));
   tubeRim.position.z = TUBE.open;
-  handL.add(body, inner, cap, tubeRim);
+  tubeG.add(body, inner, cap, tubeRim);
   // clear soft plastic, used for the strips on the opening and the inner funnel
-  const clearMat = new THREE.MeshStandardMaterial({ color: 0xe6f4fa, transparent: true, opacity: 0.42, roughness: 0.12, side: THREE.DoubleSide, depthWrite: false });
+  // yellow soft-plastic funnel (like the real tubes), with a few small dark drain holes
+  const holeTex = canvasTex(128, 128, (x, w, h) => { x.fillStyle = '#ffffff'; x.fillRect(0, 0, w, h); x.fillStyle = '#1a1a14'; for (let i = 0; i < 6; i++) { x.beginPath(); x.arc((i + 0.5) / 6 * w, h * (0.35 + (i % 2) * 0.3), 4, 0, 6.28); x.fill(); } });
+  const clearMat = new THREE.MeshStandardMaterial({ color: 0xf2cf1d, roughness: 0.45, side: THREE.DoubleSide });
+  const funnelMat = new THREE.MeshStandardMaterial({ color: 0xf2cf1d, map: holeTex, roughness: 0.45, side: THREE.DoubleSide });
   const greyMat = new THREE.MeshStandardMaterial({ color: 0xb4b8bb, roughness: 0.5 });
   // inner funnel: a clear cone a little way inside, narrowing to a small hole so fish can't get back out
   const fz = TUBE.open + 0.07, fLen = 0.09, holeR = R * 0.28;
-  const funnel = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.94, holeR, fLen, 32, 1, true).rotateX(-Math.PI / 2), clearMat);
+  const funnel = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.94, holeR, fLen, 32, 1, true).rotateX(-Math.PI / 2), funnelMat);
   funnel.position.z = fz + fLen / 2; funnel.renderOrder = 2;
   const fRing = new THREE.Mesh(new THREE.TorusGeometry(R * 0.94, 0.005, 6, 32), greyMat); fRing.position.z = fz;
   const hRing = new THREE.Mesh(new THREE.TorusGeometry(holeR, 0.004, 6, 24), greyMat); hRing.position.z = fz + fLen;
-  handL.add(funnel, fRing, hRing);
+  tubeG.add(funnel, fRing, hRing);
   // clear plastic strips on the opening: many thin wedges hinged at the rim, meeting near the middle, bending inward when pushed
-  const N = 24, chord = 2 * R * Math.sin(Math.PI / N) * 0.9, L = R * 0.9;
+  const N = 8, chord = 2 * R * Math.sin(Math.PI / N) * 0.985, L = R * 0.92; // 8 wide flaps with thin slits = a yellow cone
   const fs = new THREE.Shape(); fs.moveTo(-chord / 2, 0); fs.lineTo(chord / 2, 0); fs.lineTo(chord * 0.12, -L); fs.lineTo(-chord * 0.12, -L); fs.closePath();
   const flapGeo = new THREE.ShapeGeometry(fs), flapMat = clearMat;
   for (let i = 0; i < N; i++) {
     const am = (i + 0.5) / N * Math.PI * 2, hinge = new THREE.Group(), pivot = new THREE.Group();
     hinge.position.set(R * Math.cos(am), R * Math.sin(am), TUBE.open); hinge.rotation.z = am - Math.PI / 2;
-    pivot.rotation.x = -0.28; pivot.add(new THREE.Mesh(flapGeo, flapMat)); hinge.add(pivot); handL.add(hinge); tubeFlaps.push(pivot);
+    pivot.rotation.x = -0.6; pivot.add(new THREE.Mesh(flapGeo, flapMat)); hinge.add(pivot); tubeG.add(hinge); tubeFlaps.push(pivot);
   }
-  // dive light clipped on top of the tube
-  const torch = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.016, 0.14, 10).rotateX(Math.PI / 2), matYellow); torch.position.set(0, R + 0.024, -0.13);
-  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.019, 12), new THREE.MeshBasicMaterial({ color: 0xffffee })); lens.position.set(0, R + 0.024, -0.201); lens.rotation.y = Math.PI;
+  // dive light strapped to the wrist (stays with you when you drop the tube)
+  const torch = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.016, 0.14, 10).rotateX(Math.PI / 2), matYellow); torch.position.set(0.045, 0.04, -0.02);
+  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.019, 12), new THREE.MeshBasicMaterial({ color: 0xffffee })); lens.position.set(0.045, 0.04, -0.091); lens.rotation.y = Math.PI;
   handL.add(torch, lens);
 }
 const lamp = new THREE.SpotLight(0xeefcff, 14, 16, 0.42, 0.6, 1.2);
-lamp.position.set(0, TUBE.R + 0.024, -0.21); const lampTarget = new THREE.Object3D(); lampTarget.position.set(0, 0, -2);
+lamp.position.set(0.045, 0.04, -0.1); const lampTarget = new THREE.Object3D(); lampTarget.position.set(0, 0, -2);
 handL.add(lamp, lampTarget); lamp.target = lampTarget;
 // wrist computer
 const wristCanvas = document.createElement('canvas'); wristCanvas.width = 512; wristCanvas.height = 256;
 const wristCtx = wristCanvas.getContext('2d'), wristTex = new THREE.CanvasTexture(wristCanvas); wristTex.colorSpace = THREE.SRGBColorSpace;
 const wrist = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.08), new THREE.MeshBasicMaterial({ map: wristTex, transparent: true, fog: false, toneMapped: false }));
 wrist.position.set(0, 0.04, 0.07); wrist.rotation.x = -1.0; handL.add(wrist);
+
+// arms: hands + forearms in a black neoprene wetsuit and gloves, from models/arms_low_poly.fbx.
+// The file has both arms reaching forward; each is cut at the elbow and fixed to its controller.
+const ARM = { keep: 0.55, length: 0.72, roll: { left: Math.PI / 2, right: -Math.PI / 2 }, offset: new THREE.Vector3(0, -0.02, 0.04) }; // palms face inward, thumbs up
+// three parts per arm: black neoprene wetsuit sleeve, a darker wrist cuff, and light grey
+// puncture-resistant dive gloves (what lionfish hunters wear against the venomous spines)
+const gloveTex = canvasTex(64, 64, (x, w, h) => { // fine woven / grippy texture
+  x.fillStyle = '#c4c8cc'; x.fillRect(0, 0, w, h);
+  for (let i = 0; i < w; i += 4) { x.fillStyle = 'rgba(0,0,0,0.08)'; x.fillRect(i, 0, 2, h); x.fillRect(0, i, w, 2); }
+});
+gloveTex.wrapS = gloveTex.wrapT = THREE.RepeatWrapping;
+const armMats = [
+  new THREE.MeshStandardMaterial({ color: 0x1c2026, roughness: 0.55, metalness: 0.05 }),              // wetsuit sleeve
+  new THREE.MeshStandardMaterial({ color: 0xc4c8cc, roughness: 0.85, bumpMap: gloveTex, bumpScale: 1 }), // glove
+  new THREE.MeshStandardMaterial({ color: 0x2c3138, roughness: 0.7 }),                                 // glove cuff
+];
+const arms = { left: null, right: null };
+const armManager = new THREE.LoadingManager();
+armManager.setURLModifier(url => (/hand/i.test(url) && /\.png$/i.test(url) ? 'models/hand_texture.png' : url));
+new FBXLoader(armManager).load('models/arms_low_poly.fbx', obj => {
+  obj.updateMatrixWorld(true);
+  const src = obj.getObjectByProperty('isMesh', true); if (!src) return;
+  const g0 = (src.geometry.index ? src.geometry.toNonIndexed() : src.geometry.clone()).applyMatrix4(src.matrixWorld);
+  const P = g0.attributes.position, N = g0.attributes.normal;
+  // looking along the arms (+Z), the arm on -X is the right arm
+  for (const [hand, side] of [['right', -1], ['left', 1]]) {
+    let zMax = -Infinity, zMin = Infinity;
+    for (let i = 0; i < P.count; i++) if (Math.sign(P.getX(i)) === side) { zMax = Math.max(zMax, P.getZ(i)); zMin = Math.min(zMin, P.getZ(i)); }
+    const len = zMax - zMin, cut = zMax - len * ARM.keep;
+    // centre of the hand (near the fingertips) becomes the controller grip point
+    const c = new THREE.Vector3(); let n = 0;
+    for (let i = 0; i < P.count; i++) if (Math.sign(P.getX(i)) === side && P.getZ(i) > zMax - len * 0.12) { c.x += P.getX(i); c.y += P.getY(i); n++; }
+    c.x /= n; c.y /= n; c.z = zMax - len * 0.08;
+    // sort each triangle into sleeve / glove / cuff by how far it is from the fingertips
+    const wrist = zMax - len * 0.25, cuffEnd = zMax - len * 0.3;
+    const parts = [[[], []], [[], []], [[], []]]; // [positions, normals] for sleeve, glove, cuff
+    for (let t = 0; t < P.count; t += 3) { // keep whole triangles of this arm, from the fingertips back to the elbow
+      let ok = true, zAvg = 0;
+      for (let j = 0; j < 3; j++) { if (Math.sign(P.getX(t + j)) !== side || P.getZ(t + j) < cut) ok = false; zAvg += P.getZ(t + j) / 3; }
+      if (!ok) continue;
+      const [pos, nor] = parts[zAvg > wrist ? 1 : zAvg > cuffEnd ? 2 : 0];
+      for (let j = 0; j < 3; j++) { pos.push(P.getX(t + j) - c.x, P.getY(t + j) - c.y, P.getZ(t + j) - c.z); nor.push(N.getX(t + j), N.getY(t + j), N.getZ(t + j)); }
+    }
+    const pos = [], nor = [], g = new THREE.BufferGeometry(); let start = 0;
+    parts.forEach(([p, nn], mi) => { pos.push(...p); nor.push(...nn); g.addGroup(start, p.length / 3, mi); start += p.length / 3; });
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    // simple UVs for the glove's woven texture
+    const uv = new Float32Array(pos.length / 3 * 2); for (let i = 0; i < pos.length / 3; i++) { uv[i * 2] = pos[i * 3] * 0.6; uv[i * 2 + 1] = pos[i * 3 + 2] * 0.6; }
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    const s = ARM.length / len;
+    g.scale(s, s, s); g.rotateY(Math.PI); // fingers point forward (-Z), forearm runs back toward you
+    const m = new THREE.Mesh(g, armMats), holder = new THREE.Group();
+    holder.add(m); holder.position.copy(ARM.offset); holder.rotation.z = ARM.roll[hand];
+    (hand === 'left' ? handL : handR).add(holder); arms[hand] = holder;
+  }
+  handL.getObjectByName('gripL').visible = false; // hide the placeholder controller grip
+}, undefined, () => {}); // if the model can't load, the game simply runs without arms
 
 // spear
 const spearG = new THREE.Group(); scene.add(spearG);
@@ -901,7 +1089,9 @@ const ROPE_N = 16, ropePos = new Float32Array(ROPE_N * 3);
 const ropeGeo = new THREE.BufferGeometry(); ropeGeo.setAttribute('position', new THREE.BufferAttribute(ropePos, 3));
 const rope = new THREE.Line(ropeGeo, new THREE.LineBasicMaterial({ color: 0xf0f0e0, transparent: true, opacity: 0.7 }));
 rope.frustumCulled = false; scene.add(rope);
-const spear = { state: 'loaded', vel: new THREE.Vector3(), fish: null, timer: 0, cooldown: 0 };
+spearG.visible = false; rope.visible = false; // (old speargun parts, not used by the pole spear)
+const spear = { state: 'loaded', vel: 0, vel3: new THREE.Vector3(), off: 0, charge: 0, peak: 0, fish: null, timer: 0, cooldown: 0 };
+const _mLoad = new THREE.Matrix4();
 
 // sting flash (VR) + message panel + popups
 const flashSphere = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 8), new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, fog: false, toneMapped: false }));
@@ -1014,7 +1204,7 @@ function pollInput(dt) {
     L.sx = clamp(eL.stick.x + k('KeyD') - k('KeyA'), -1, 1); L.sy = clamp(eL.stick.y + k('KeyS') - k('KeyW'), -1, 1);
     R.sx = clamp(eR.stick.x + k('KeyE') - k('KeyQ'), -1, 1); R.sy = clamp(eR.stick.y + k('KeyC') + k('ControlLeft') - k('Space'), -1, 1);
     R.trigger = !!eR.ptr.trigger || !!k('KeyF') || mouseFire; R.grip = !!eR.ptr.grip || !!k('KeyG'); R.a = !!eR.ptr.a || !!k('KeyR'); R.b = !!eR.ptr.b || !!k('Enter') || !!k('Escape');
-    L.trigger = !!eL.ptr.trigger || !!k('KeyZ'); L.grip = !!eL.ptr.grip; L.a = !!eL.ptr.a || !!k('KeyX'); L.b = !!eL.ptr.b;
+    L.trigger = !!eL.ptr.trigger || !!k('KeyZ'); L.grip = !!eL.ptr.grip || !!k('KeyT'); L.a = !!eL.ptr.a || !!k('KeyX'); L.b = !!eL.ptr.b || !!k('KeyY');
     look.yaw -= (k('ArrowRight') - k('ArrowLeft')) * dt * 1.8;
     look.pitch = clamp(look.pitch + (k('ArrowUp') - k('ArrowDown')) * dt * 1.5, -1.4, 1.4);
   }
@@ -1040,11 +1230,11 @@ function emuHands(dt = 0) {
   for (let t = 1; t < aimDist; t += 0.5) { raycaster.ray.at(t, _v4); if (_v4.y < floorH(_v4.x, _v4.z)) { aimDist = t; break; } }
   const aimR = raycaster.ray.at(aimDist, new THREE.Vector3());
   placeEmuHand(handR, emu.right.off, aimR);
-  if (spear.state === 'holding') {
+  if (spear.state === 'holding' && tubeFree.state === 'hand') {
     // desktop helper: hold the tube right in front of the fish, opening facing it
     rig.updateMatrixWorld(true);
     const restR = handR.getWorldPosition(new THREE.Vector3()), aim = new THREE.Vector3(0, 0, -1).applyQuaternion(handR.getWorldQuaternion(new THREE.Quaternion()));
-    const opening = restR.clone().addScaledVector(aim, 0.55), handPos = opening.clone().addScaledVector(aim, -TUBE.open);
+    const opening = restR.clone().addScaledVector(aim, stowDist()), handPos = opening.clone().addScaledVector(aim, -TUBE.open);
     _m1.lookAt(handPos, handPos.clone().sub(aim), Math.abs(aim.y) > 0.98 ? _v4.set(1, 0, 0) : UP); _q1.setFromRotationMatrix(_m1);
     rig.getWorldQuaternion(_q2).invert(); handL.quaternion.copy(_q2.multiply(_q1)); handL.position.copy(rig.worldToLocal(handPos));
     // each click shoves the gun forward
@@ -1074,7 +1264,9 @@ const store = {
 let saves = store.get(SAVE_KEY, []);
 if (!Array.isArray(saves)) saves = [];
 let cur = null; // the save being played
-const settings = Object.assign({ vol: 0.8, turn: 'snap30', speed: 'normal', gfx: 'high' }, store.get(SET_KEY, {}));
+const settings = Object.assign({ vol: 0.8, turn: 'snap30', speed: 'normal', gfx: 'high', water: 'clear' }, store.get(SET_KEY, {}));
+const WATER_FOG = { clear: 0.03, normal: 0.042, murky: 0.058 };       // how far you can see underwater
+function applyWater() { reefFog.density = WATER_FOG[settings.water] || 0.03; }
 function applyGfx() { // Low = no shadows and lower resolution, for more speed
   const low = settings.gfx === 'low';
   if (!renderer.xr.isPresenting) renderer.setPixelRatio(low ? 1 : Math.min(devicePixelRatio, 2));
@@ -1084,15 +1276,28 @@ const writeSaves = () => { if (cur) cur.last = Date.now(); store.set(SAVE_KEY, s
 const writeSettings = () => store.set(SET_KEY, settings);
 function createSave(name) {
   const s = { id: Date.now().toString(36), name: name.trim() || `Diver ${saves.length + 1}`, coins: 0,
-              up: { tank: 0, reel: 0, bands: 0, sonar: 0 }, stats: { lion: 0, fish: 0, dives: 0, bestLion: 0, earned: 0 }, bag: [], last: Date.now() };
+              up: { tank: 0, reel: 0, bands: 0, sonar: 0 }, stats: { lion: 0, fish: 0, dives: 0, bestLion: 0, earned: 0 }, bag: [], last: Date.now(),
+              gear: { owned: ['pole1'], eq: 'pole1' } };
   saves.push(s); writeSaves(); return s;
 }
 const UPGRADES = [
   { k: 'tank',  name: 'Bigger air tank', cost: [80, 200, 450],  desc: l => `Dive time ${fmtAir(airFor(l))}${l < 3 ? ' > ' + fmtAir(airFor(l + 1)) : ''}` },
-  { k: 'reel',  name: 'Fast reel',       cost: [60, 150, 350],  desc: () => 'Spear reels back to you faster' },
-  { k: 'bands', name: 'Power bands',     cost: [100, 250, 500], desc: () => 'Spear flies faster and farther' },
+  { k: 'reel',  name: 'Quick draw',      cost: [60, 150, 350],  desc: () => 'Pull the band back faster' },
+  { k: 'bands', name: 'Power bands',     cost: [100, 250, 500], desc: () => 'Longer, harder pole spear thrust' },
   { k: 'sonar', name: 'Sonar chip',      cost: [50, 120, 300],  desc: () => 'Lionfish sonar recharges faster' },
 ];
+// ---- gear you can buy: pole spears (cheap -> pricey) and spearguns (very pricey) ----
+const GEAR = [
+  { id: 'pole1', type: 'pole', name: 'Fiberglass Pole',    cost: 0,     reach: 1.0,  draw: 1.0, shaft: 0xf2c418, grip: 0x23272e, desc: 'Starter pole spear' },
+  { id: 'pole2', type: 'pole', name: 'Aluminum Pole',      cost: 150,   reach: 1.2,  draw: 1.1, shaft: 0xb9c3cc, grip: 0x1f4e8c, desc: 'Lighter, reaches further' },
+  { id: 'pole3', type: 'pole', name: 'Carbon Pole',        cost: 500,   reach: 1.4,  draw: 1.3, shaft: 0x1b1b1d, grip: 0xc0281e, desc: 'Stiff carbon, strong thrust' },
+  { id: 'pole4', type: 'pole', name: 'Pro Carbon Pole',    cost: 1200,  reach: 1.65, draw: 1.5, shaft: 0x111113, grip: 0xd4a017, desc: 'Top of the line pole spear' },
+  { id: 'gun1',  type: 'gun',  name: 'Reef Speargun',      cost: 3000,  speed: 20, range: 9,  reload: 1.0,  len: 0.75, body: 0x2a2f36, accent: 0xd0352b, desc: 'Band speargun, shoots 9 m' },
+  { id: 'gun2',  type: 'gun',  name: 'Pneumatic Speargun', cost: 7500,  speed: 26, range: 12, reload: 0.7,  len: 0.85, body: 0x1f3b5a, accent: 0xc8ccd2, desc: 'Air powered, shoots 12 m' },
+  { id: 'gun3',  type: 'gun',  name: 'Carbon Railgun',     cost: 15000, speed: 32, range: 16, reload: 0.5,  len: 1.1,  body: 0x121214, accent: 0xf2c418, desc: 'Long carbon railgun, 16 m' },
+];
+function fixGear(s) { if (!s.gear) s.gear = { owned: ['pole1'], eq: 'pole1' }; if (!s.gear.owned.includes('pole1')) s.gear.owned.unshift('pole1'); }
+const gear = () => GEAR.find(g => g.id === (cur && cur.gear ? cur.gear.eq : 'pole1')) || GEAR[0];
 const lvl = k => (cur ? cur.up[k] : 0);
 const airFor = l => 180 + 60 * l;
 const maxAir = () => airFor(lvl('tank'));
@@ -1111,9 +1316,9 @@ const RARITY = [
   { n: 'Legendary', c: '#ffb020', x: 3.5 },
 ];
 const BASE_TIER = { tang: 0, yellowtail: 0, parrot: 1, lion: 1, grouper: 2 };
-const PTS = { tang: 10, yellowtail: 10, parrot: 15, grouper: 25, lion: 50 };
+const PTS = { tang: 10, yellowtail: 10, parrot: 15, grouper: 25, lion: 20 }; // lionfish: common, so they pay less
 function rarityFor(k, s, v) { return Math.min(4, BASE_TIER[k] + (s >= 1.28 ? 2 : s >= 1.12 ? 1 : 0) + (k === 'lion' && v % 5 === 4 ? 1 : 0)); }
-function priceFor(k, s, r) { return Math.round(PTS[k] * s * s * (k === 'lion' ? 1.5 : 1) * RARITY[r].x); }
+function priceFor(k, s, r) { return Math.round(PTS[k] * s * s * RARITY[r].x); }
 function measure(f) { // done when caught; the rarity stays a surprise until Sal sizes it
   const [cm, kg] = REAL[f.sp.key], s = f.size, r = rarityFor(f.sp.key, s, f.variant);
   return { k: f.sp.key, v: f.variant, size: +s.toFixed(3), cm: +(cm * s).toFixed(1), kg: +(kg * s * s * s).toFixed(2), r, coins: priceFor(f.sp.key, s, r), sized: false };
@@ -1136,19 +1341,19 @@ function placePlayer(pos, yaw) {
 }
 function resetSpear() {
   if (spear.fish) { removeFish(spear.fish); spear.fish = null; }
-  spear.state = 'loaded'; spear.cooldown = 0;
+  spear.state = 'loaded'; spear.cooldown = 0; spear.off = 0; spear.charge = 0; pole.position.z = 0;
 }
 function startDive() {
   if (!cur) return;
   fadeThen(() => {
-    game.mode = 'dive'; setWorld('reef'); teller.state = 'idle';
+    game.mode = 'dive'; setWorld('reef'); teller.state = 'idle'; zoneNow = null;
     Object.assign(game, { state: 'playing', maxAir: maxAir(), lion: 0, fish: 0, diveCoins: 0, stingCd: 0, sonar: 0, sonarCd: 0 });
     game.air = game.maxAir;
     cur.stats.dives++; writeSaves();
-    resetSpear(); populate();
+    resetSpear(); resetTube(); populate();
     placePlayer(SPAWN, 0);
     showMsg(['DIVE!', 'Spear the invasive LIONFISH (worth the most)', "Don't touch their spines: they sting!",
-             'Trigger: fire · A / grip: reel · L trigger: sonar', 'B: swim back up to the dock'], 7);
+             'Hold trigger: pull back · let go: shoot · L trigger: sonar', 'L grip: drop tube · Y: tube back · B: swim up'], 7);
   });
 }
 function endDive(reason) {
@@ -1161,92 +1366,146 @@ function endDive(reason) {
 function goDock(spot = 'teller') {
   fadeThen(() => {
     game.mode = 'dock'; game.state = 'off'; setWorld('dock');
-    resetSpear(); msg.visible = false;
+    resetSpear(); resetTube(); msg.visible = false;
     const S = DOCK_SPOTS[spot]; placePlayer(S.pos, S.yaw);
     refreshDockPanels();
   });
 }
 
+// trigger: a pole spear starts pulling back (stretching the band); a speargun fires its spear on a line
 function fire() {
   if (spear.state !== 'loaded' || spear.cooldown > 0 || game.state !== 'playing') return;
-  handR.getWorldQuaternion(_q1);
-  spear.vel.set(0, 0, -1).applyQuaternion(_q1).multiplyScalar(spearSpeed());
-  spear.state = 'flying'; sfx.fire(); buzz('right', 0.9, 70);
-  emitBubbles(GUN_TIP.clone().applyMatrix4(handR.matrixWorld), 12, 0.04, 0.8);
+  const G = gear();
+  if (G.type === 'gun') {
+    handR.getWorldQuaternion(_q1);
+    spear.vel3.set(0, 0, -1).applyQuaternion(_q1).multiplyScalar(G.speed * (1 + 0.1 * lvl('bands')));
+    spear.state = 'flying'; sfx.fire(); buzz('right', 0.9, 70); emitBubbles(gunTip, 12, 0.04, 0.8);
+    return;
+  }
+  spear.state = 'cocking'; spear.charge = 0;
+  tone('triangle', 140, 220, 0.4, 0.08); // rubber stretching
 }
-function orientSpear(fwd) { // -Z of spear along fwd
+function orientSpear(fwd) { // -Z of the flying gun spear along fwd
   _v1.copy(spearG.position).add(fwd); _m1.lookAt(spearG.position, _v1, Math.abs(fwd.y) > 0.99 ? _v2.set(1, 0, 0) : UP); spearG.quaternion.setFromRotationMatrix(_m1);
 }
+// show the equipped gear in your hand
+function applyGear() {
+  const G = gear(), isGun = G.type === 'gun';
+  pole.visible = !isGun; bandStrands.forEach(b => (b.visible = !isGun)); gunG.visible = isGun; spearG.visible = isGun; rope.visible = false;
+  if (isGun) buildGun(G); else { poleShaftMat.color.set(G.shaft); poleGripMat.color.set(G.grip); }
+  resetSpear();
+}
+// how far in front of your right hand a speared fish sits while you carry it (for the desktop tube helper)
+const stowDist = () => (gear().type === 'gun' ? gear().len + 0.07 : -POLE.tipZ - POLE.holdOff - 0.05);
 function segDist(p0, p1, c) {
   const d = _v2.subVectors(p1, p0), l2 = d.lengthSq();
   const t = l2 > 0 ? clamp(_v3.subVectors(c, p0).dot(d) / l2, 0, 1) : 0;
   return _v3.copy(p0).addScaledVector(d, t).distanceTo(c);
 }
 const spearTip = new THREE.Vector3(), prevTip = new THREE.Vector3(), gunTip = new THREE.Vector3();
+const TIP_LOCAL = new THREE.Vector3(0, 0, POLE.tipZ);
+const tipWorld = out => { pole.updateMatrixWorld(true); return out.copy(TIP_LOCAL).applyMatrix4(pole.matrixWorld); };
+// states: loaded -> cocking (trigger held, pole slides back) -> thrust (released, shoots forward)
+//         -> return (band pulls it back) -> loaded, or -> holding (fish on the tip, stow it in the tube)
 function updateSpear(dt) {
+  if (gear().type === 'gun') return updateGun(dt);
   spear.cooldown -= dt;
-  gunTip.copy(GUN_TIP).applyMatrix4(handR.matrixWorld);
-  if (spear.state === 'loaded' || spear.state === 'holding') {
-    _m1.multiplyMatrices(handR.matrixWorld, LOADED_M); _m1.decompose(spearG.position, spearG.quaternion, _s1);
-    rope.visible = false; laser.visible = spear.state === 'loaded' && game.state === 'playing';
-    spearG.updateMatrixWorld(); spearTip.copy(SPEAR_TIP).applyMatrix4(spearG.matrixWorld);
-    if (spear.state === 'holding') { fishOnSpear(); stowUpdate(dt); }
-    return;
-  }
-  laser.visible = false; rope.visible = true;
-  spearG.updateMatrixWorld(); prevTip.copy(SPEAR_TIP).applyMatrix4(spearG.matrixWorld);
-  if (spear.state === 'flying') {
-    spear.vel.multiplyScalar(Math.exp(-0.6 * dt)); spear.vel.y -= 1.2 * dt;
-    spearG.position.addScaledVector(spear.vel, dt);
-    orientSpear(_v4.copy(spear.vel).normalize());
-    spearG.updateMatrixWorld(); spearTip.copy(SPEAR_TIP).applyMatrix4(spearG.matrixWorld);
-    // fish hits
-    for (const f of fishes) {
+  gunTip.setFromMatrixPosition(handR.matrixWorld); // where your right hand is
+  const G = gear(), s = spear, drawTime = 0.6 / (reelMul() * G.draw), reachMul = (1 + 0.15 * lvl('bands')) * G.reach;
+  tipWorld(prevTip);
+  if (s.state === 'cocking') {
+    if (input.right.trigger && game.state === 'playing') {
+      s.charge = Math.min(1, s.charge + dt / drawTime);
+      s.off = 0.42 * s.charge;
+      if (Math.random() < 0.35) buzz('right', 0.1 + 0.3 * s.charge, 15);
+    } else { // let go: the band fires the pole forward
+      s.state = 'thrust'; s.vel = -(7 + 9 * s.charge) * reachMul; s.peak = -(0.9 + 1.9 * s.charge) * reachMul;
+      sfx.fire(); buzz('right', 0.6 + 0.4 * s.charge, 60);
+    }
+  } else if (s.state === 'thrust') {
+    s.off += s.vel * dt;
+    if (s.off <= s.peak) { s.off = s.peak; s.state = 'return'; }
+  } else if (s.state === 'return') {
+    s.off = Math.min(0, s.off + 4 * dt);
+    if (s.off >= 0) {
+      s.off = 0;
+      if (s.fish) startHolding(); // fish stays on the tip until you stow it in the tube
+      else { s.state = 'loaded'; s.cooldown = 0.25; }
+    }
+  } else if (s.state === 'holding') {
+    s.off += (POLE.holdOff - s.off) * Math.min(1, dt * 6); // slide your hand up the pole: tip comes closer
+  } else s.off += (0 - s.off) * Math.min(1, dt * 8);
+  pole.position.z = s.off; updateBand();
+  tipWorld(spearTip);
+  if (s.state === 'thrust') {
+    for (const f of fishes) { // the paralyzer tip catches the first fish it passes through
       if (f.state !== 'swim') continue;
       if (segDist(prevTip, spearTip, f.g.position) < f.r) {
-        f.state = 'speared'; spear.fish = f; spear.state = 'stuck'; spear.timer = 0.3;
+        f.state = 'speared'; s.fish = f; s.state = 'return';
         sfx.hit(); buzz('right', 1, 120); emitBubbles(f.g.position, 15, 0.1, 0.7);
         break;
       }
     }
-    if (spear.state === 'flying') {
+    if (s.state === 'thrust') {
       let hitSolid = spearTip.y < floorH(spearTip.x, spearTip.z);
       for (const r of rocks) if (!hitSolid && spearTip.distanceTo(r.c) < r.r) hitSolid = true;
-      if (hitSolid) { spear.state = 'stuck'; spear.timer = 0.5; sfx.thunk(); buzz('right', 0.4, 40); emitBubbles(spearTip, 8, 0.1, 0.5); }
-      else if (spearG.position.distanceTo(gunTip) > spearRange() || spear.vel.length() < 4) spear.state = 'reeling';
+      if (hitSolid) { s.state = 'return'; sfx.thunk(); buzz('right', 0.5, 40); emitBubbles(spearTip, 8, 0.1, 0.5); }
     }
-  } else if (spear.state === 'stuck') {
-    spear.timer -= dt; if (spear.timer <= 0) spear.state = 'reeling';
-  } else if (spear.state === 'reeling') {
-    const to = _v4.subVectors(gunTip, spearG.position), d = to.length();
-    const speed = ((input.right.a || input.right.grip) ? 18 : 9) * reelMul();
-    if (d < 0.45) {
-      if (spear.fish) startHolding(); // fish stays on the spear until you stow it in the tube
-      else { spear.state = 'loaded'; spear.cooldown = 0.3; }
-    } else {
-      to.multiplyScalar(1 / d);
-      spearG.position.addScaledVector(to, Math.min(d, speed * dt));
-      orientSpear(to.negate());
-      if (Math.random() < 0.3) buzz('right', 0.15, 15);
+  }
+  laser.visible = s.state === 'loaded' && game.state === 'playing' && game.mode === 'dive';
+  fishOnSpear();
+  if (s.state === 'holding') stowUpdate(dt);
+}
+function fishOnSpear() { // speared fish sits just behind the tip
+  if (!spear.fish) return;
+  const inFlight = gear().type === 'gun' && spear.state !== 'loaded' && spear.state !== 'holding';
+  (inFlight ? spearG.getWorldQuaternion(_q1) : handR.getWorldQuaternion(_q1)); _v1.set(0, 0, -1).applyQuaternion(_q1);
+  spear.fish.g.position.copy(spearTip).addScaledVector(_v1, -0.12);
+}
+// speargun: the spear flies out on a line, sticks in a fish (or rock), then reels back to the gun
+function updateGun(dt) {
+  const G = gear(), s = spear;
+  s.cooldown -= dt;
+  gunTip.set(0, 0.02, -G.len - 0.02).applyMatrix4(handR.matrixWorld);
+  if (s.state === 'loaded' || s.state === 'holding') {
+    _mLoad.makeTranslation(0, 0.024, -(G.len - 0.3)); _m1.multiplyMatrices(handR.matrixWorld, _mLoad); _m1.decompose(spearG.position, spearG.quaternion, _s1);
+    rope.visible = false; gunLaser.visible = s.state === 'loaded' && game.state === 'playing' && game.mode === 'dive';
+    spearG.updateMatrixWorld(); spearTip.copy(SPEAR_TIP).applyMatrix4(spearG.matrixWorld);
+    fishOnSpear(); if (s.state === 'holding') stowUpdate(dt);
+    return;
+  }
+  gunLaser.visible = false; rope.visible = true;
+  spearG.updateMatrixWorld(); prevTip.copy(SPEAR_TIP).applyMatrix4(spearG.matrixWorld);
+  if (s.state === 'flying') {
+    s.vel3.multiplyScalar(Math.exp(-0.6 * dt)); s.vel3.y -= 1.2 * dt;
+    spearG.position.addScaledVector(s.vel3, dt); orientSpear(_v4.copy(s.vel3).normalize());
+    spearG.updateMatrixWorld(); spearTip.copy(SPEAR_TIP).applyMatrix4(spearG.matrixWorld);
+    for (const f of fishes) {
+      if (f.state !== 'swim') continue;
+      if (segDist(prevTip, spearTip, f.g.position) < f.r) { f.state = 'speared'; s.fish = f; s.state = 'stuck'; s.timer = 0.3; sfx.hit(); buzz('right', 1, 120); emitBubbles(f.g.position, 15, 0.1, 0.7); break; }
     }
+    if (s.state === 'flying') {
+      let hitSolid = spearTip.y < floorH(spearTip.x, spearTip.z);
+      for (const r of rocks) if (!hitSolid && spearTip.distanceTo(r.c) < r.r) hitSolid = true;
+      if (hitSolid) { s.state = 'stuck'; s.timer = 0.5; sfx.thunk(); buzz('right', 0.4, 40); emitBubbles(spearTip, 8, 0.1, 0.5); }
+      else if (spearG.position.distanceTo(gunTip) > G.range * (1 + 0.1 * lvl('bands')) || s.vel3.length() < 4) s.state = 'reeling';
+    }
+  } else if (s.state === 'stuck') {
+    s.timer -= dt; if (s.timer <= 0) s.state = 'reeling';
+  } else if (s.state === 'reeling') {
+    _mLoad.makeTranslation(0, 0.024, -(G.len - 0.3)); _v3.setFromMatrixPosition(_m1.multiplyMatrices(handR.matrixWorld, _mLoad));
+    const to = _v4.subVectors(_v3, spearG.position), d = to.length(), speed = ((input.right.a || input.right.grip) ? 18 : 9) * reelMul();
+    if (d < 0.3) { if (s.fish) startHolding(); else { s.state = 'loaded'; s.cooldown = G.reload; } }
+    else { to.multiplyScalar(1 / d); spearG.position.addScaledVector(to, Math.min(d, speed * dt)); orientSpear(to.clone().negate()); if (Math.random() < 0.3) buzz('right', 0.15, 15); }
   }
   spearG.updateMatrixWorld(); spearTip.copy(SPEAR_TIP).applyMatrix4(spearG.matrixWorld);
   fishOnSpear();
-  // rope with sag
-  const tail = _v2.copy(SPEAR_TAIL).applyMatrix4(spearG.matrixWorld), len = tail.distanceTo(gunTip);
-  const sag = spear.state === 'reeling' ? 0.03 : 0.08 * len;
-  for (let i = 0; i < ROPE_N; i++) {
+  const tail = _v2.copy(SPEAR_TAIL).applyMatrix4(spearG.matrixWorld), len = tail.distanceTo(gunTip), sag = s.state === 'reeling' ? 0.03 : 0.08 * len;
+  for (let i = 0; i < ROPE_N; i++) { // the line between gun and spear, sagging a little
     const t = i / (ROPE_N - 1);
-    ropePos[i * 3] = gunTip.x + (tail.x - gunTip.x) * t;
-    ropePos[i * 3 + 1] = gunTip.y + (tail.y - gunTip.y) * t - Math.sin(Math.PI * t) * sag;
-    ropePos[i * 3 + 2] = gunTip.z + (tail.z - gunTip.z) * t;
+    ropePos[i * 3] = gunTip.x + (tail.x - gunTip.x) * t; ropePos[i * 3 + 1] = gunTip.y + (tail.y - gunTip.y) * t - Math.sin(Math.PI * t) * sag; ropePos[i * 3 + 2] = gunTip.z + (tail.z - gunTip.z) * t;
   }
   ropeGeo.attributes.position.needsUpdate = true;
-}
-function fishOnSpear() { // impaled fish rides the spear
-  if (!spear.fish) return;
-  _v1.set(0, 0, -1).applyQuaternion(spearG.quaternion);
-  spear.fish.g.position.copy(spearTip).addScaledVector(_v1, -0.14);
 }
 
 // ---- stowing: push the speared fish through the tube's rubber flaps ----
@@ -1264,9 +1523,9 @@ function startHolding() {
 }
 function stowUpdate(dt) {
   const f = spear.fish; if (!f) { spear.state = 'loaded'; return; }
-  handL.updateMatrixWorld();
-  const O = _v1.set(0, 0, TUBE.open).applyMatrix4(handL.matrixWorld);           // centre of the opening
-  const A = _v2.set(0, 0, 1).transformDirection(handL.matrixWorld);              // direction into the tube
+  tubeG.updateMatrixWorld(true);
+  const O = _v1.set(0, 0, TUBE.open).applyMatrix4(tubeG.matrixWorld);           // centre of the opening
+  const A = _v2.set(0, 0, 1).transformDirection(tubeG.matrixWorld);              // direction into the tube
   const rel = _v3.subVectors(f.g.position, O), d = rel.dot(A), radial = rel.addScaledVector(A, -d).length();
   const tRel = _v4.subVectors(spearTip, O), dTip = tRel.dot(A), radTip = tRel.addScaledVector(A, -dTip).length();
   const lined = radial < TUBE.R * 1.4 && radTip < TUBE.R * 1.4;
@@ -1298,10 +1557,45 @@ function stowUpdate(dt) {
 }
 function animateTube(dt) {
   const holding = spear.state === 'holding';
-  const target = -(0.28 + Math.min(stow.open, 1.4) * 1.05), k = Math.min(1, dt * (stow.open > 0 ? 18 : 6));
+  const target = -(0.6 + Math.min(stow.open, 1.4) * 0.8), k = Math.min(1, dt * (stow.open > 0 ? 18 : 6));
   for (const p of tubeFlaps) p.rotation.x += (target - p.rotation.x) * k;
   if (!holding) stow.open = Math.max(0, stow.open - dt * 4);
   tubeRim.material.emissiveIntensity = holding ? 0.6 + 0.6 * Math.sin(elapsed * 6) : 0; // rim glows: "put it here"
+}
+// ---- drop the tube (left grip) and call it back to your hand (left Y) ----
+const tubeFree = { state: 'hand', vel: new THREE.Vector3() };
+function dropTube() {
+  if (tubeFree.state !== 'hand' || game.mode !== 'dive') return;
+  reefRoot.attach(tubeG); tubeFree.state = 'dropped'; tubeFree.vel.set(0, -0.15, 0);
+  buzz('left', 0.4, 60); tone('sine', 300, 180, 0.12, 0.12);
+  popup('Tube dropped · Y to call it back', tubeG.getWorldPosition(new THREE.Vector3()).add(_v1.set(0, 0.25, 0)), '#bff3ff');
+}
+function recallTube() {
+  if (tubeFree.state !== 'dropped') return;
+  tubeFree.state = 'returning'; tone('sine', 400, 700, 0.15, 0.12);
+}
+function resetTube() {
+  if (tubeG.parent !== handL) handL.attach(tubeG);
+  tubeG.position.set(0, 0, 0); tubeG.quaternion.identity(); tubeFree.state = 'hand';
+}
+function updateTube(dt) {
+  const p = tubeG.position;
+  if (tubeFree.state === 'dropped') { // sinks slowly, then rolls onto its side on the sand
+    tubeFree.vel.y -= 0.5 * dt; tubeFree.vel.multiplyScalar(Math.exp(-1.5 * dt)); p.addScaledVector(tubeFree.vel, dt);
+    const fy = floorH(p.x, p.z) + TUBE.R;
+    if (p.y <= fy + 0.02) {
+      p.y = Math.max(p.y, fy); tubeFree.vel.set(0, 0, 0);
+      _v1.set(0, 0, 1).applyQuaternion(tubeG.quaternion); _v1.y = 0; if (_v1.lengthSq() < 1e-4) _v1.set(1, 0, 0); _v1.normalize();
+      _m1.lookAt(_v2.set(0, 0, 0), _v3.copy(_v1).negate(), UP); _q1.setFromRotationMatrix(_m1);
+      tubeG.quaternion.slerp(_q1, 1 - Math.exp(-dt * 3));
+    }
+  } else if (tubeFree.state === 'returning') { // flies back into your left hand
+    handL.updateMatrixWorld(true);
+    const target = handL.getWorldPosition(_v1), tq = handL.getWorldQuaternion(_q1);
+    const k = 1 - Math.exp(-dt * 9);
+    p.lerp(target, k); tubeG.quaternion.slerp(tq, k);
+    if (p.distanceTo(target) < 0.06) { resetTube(); buzz('left', 0.6, 60); tone('sine', 700, 900, 0.08, 0.12); }
+  }
 }
 function collect(f, at = gunTip) {
   const sp = f.sp, m = measure(f);
@@ -1361,13 +1655,14 @@ function locomotion(dt) {
   turn(dt);
   camera.getWorldDirection(_v1);
   const right = _v2.crossVectors(_v1, UP).normalize(), sm = SPEED_MUL[settings.speed];
-  const want = _v3.set(0, 0, 0).addScaledVector(_v1, -L.sy * 2.6 * sm).addScaledVector(right, L.sx * 2.0 * sm);
+  const want = _v3.set(0, 0, 0).addScaledVector(_v1, -L.sy * 3.2 * sm).addScaledVector(right, L.sx * 2.4 * sm);
   want.y += -R.sy * 1.8;
   swimVel.lerp(want, 1 - Math.exp(-dt * 2.5));
   rig.position.addScaledVector(swimVel, dt);
   rig.updateMatrixWorld(true); camera.getWorldPosition(head);
   const r = Math.hypot(head.x, head.z);
-  if (r > 30) { const k = (r - 30) / r; rig.position.x -= head.x * k; rig.position.z -= head.z * k; }
+  const rEdge = WORLD_R - 6;
+  if (r > rEdge) { const k = (r - rEdge) / r; rig.position.x -= head.x * k; rig.position.z -= head.z * k; }
   const minY = floorH(head.x, head.z) + 0.4; if (head.y < minY) rig.position.y += minY - head.y;
   if (head.y > 14) rig.position.y -= head.y - 14;
   for (const rk of rocks) { // don't swim into rocks
@@ -1377,19 +1672,32 @@ function locomotion(dt) {
   rig.updateMatrixWorld(true); camera.getWorldPosition(head);
 }
 const handPosL = new THREE.Vector3(), handPosR = new THREE.Vector3();
+// show the zone's name when you swim into it
+let zoneNow = null, zoneT = 0;
+function zoneCheck(dt) {
+  if ((zoneT -= dt) > 0) return; zoneT = 0.5;
+  const Z = zoneAt(head.x, head.z);
+  if (Z && Z !== zoneNow) { camera.getWorldDirection(_v1); _v1.y = 0; _v1.normalize(); popup(Z.name.toUpperCase(), head.clone().addScaledVector(_v1, 1.6).add(_v2.set(0, 0.25, 0)), '#bff3ff'); }
+  if (Z) zoneNow = Z;
+}
 function updateFish(dt, t) {
+  fishCenter.copy(head);
   for (const s of schools) {
     s.timer -= dt;
-    if (s.timer <= 0 || s.target.distanceTo(head) < 4) {
+    if (s.target.distanceTo(head) > 55) { // the whole school fell far behind you: it reappears ahead, out of sight
+      s.target.copy(farPoint(1.5, 6));
+      for (const f of fishes) if (f.school === s && f.state === 'swim') { f.g.position.copy(s.target).add(f.offset); f.vel.set(0, 0, 0); }
+    } else if (s.timer <= 0 || s.target.distanceTo(head) < 4) {
       s.target.copy(arenaPoint(1.5, 6, 23)); s.timer = rand(6, 12);
       if (s.target.distanceTo(head) < 6) s.target.add(_v1.subVectors(s.target, head).setY(0).setLength(8));
     }
   }
   handL.getWorldPosition(handPosL); handR.getWorldPosition(handPosR);
-  const spearFlying = spear.state === 'flying';
+  const spearFlying = spear.state === 'thrust' || spear.state === 'flying';
   for (const f of fishes) {
     const p = f.g.position, sp = f.sp;
     if (f.state === 'speared') { f.tail.rotation.y = Math.sin(t * 30) * 0.7; continue; }
+    if (!f.school && p.distanceTo(head) > 55) relocateFish(f);
     let tgt;
     if (f.school) tgt = _v1.copy(f.school.target).add(f.offset);
     else { f.retarget -= dt; if (f.retarget < 0 || p.distanceTo(f.target) < 0.6) pickTarget(f); tgt = f.target; }
@@ -1398,7 +1706,7 @@ function updateFish(dt, t) {
     let panic = 0;
     if (!sp.lion) {
       const dh = p.distanceTo(head);
-      if (dh < 3.5) { panic = (3.5 - dh) / 3.5; des.addScaledVector(_v3.subVectors(p, head).normalize(), sp.speed * 3 * panic); }
+      if (dh < 2.4) { panic = (2.4 - dh) / 2.4; des.addScaledVector(_v3.subVectors(p, head).normalize(), sp.speed * 3 * panic); }
       if (spearFlying) { const ds = p.distanceTo(spearTip); if (ds < 2.2) { panic = Math.max(panic, 0.8); des.addScaledVector(_v3.subVectors(p, spearTip).normalize(), sp.speed * 2.5); } }
     } else if (game.state === 'playing' && game.stingCd <= 0) {
       if (p.distanceTo(head) < f.r + 0.25) sting(null);
@@ -1406,7 +1714,7 @@ function updateFish(dt, t) {
       else if (p.distanceTo(handPosR) < f.r + 0.06) sting('right');
     }
     const fy = floorH(p.x, p.z); if (p.y < fy + 0.4) des.y += (fy + 0.4 - p.y) * 3; if (p.y > 12) des.y -= (p.y - 12) * 2;
-    const r = Math.hypot(p.x, p.z); if (r > 28) { des.x -= p.x / r * (r - 28) * 2; des.z -= p.z / r * (r - 28) * 2; }
+    const r = Math.hypot(p.x, p.z), rb = WORLD_R - 10; if (r > rb) { des.x -= p.x / r * (r - rb) * 2; des.z -= p.z / r * (r - rb) * 2; }
     f.vel.lerp(des, 1 - Math.exp(-dt * (1.4 + panic * 4)));
     p.addScaledVector(f.vel, dt);
     if (sp.lion) { // hover: gentle bob and slow drifting turns
@@ -1904,7 +2212,7 @@ function placeMenu() {
 function openMenu(screen = 'main') { game.mode = 'menu'; walkVel.set(0, 0, 0); go(screen); placeMenu(); menuPanel.mesh.visible = true; }
 function closeMenu() { menuPanel.mesh.visible = false; game.mode = 'dock'; refreshDockPanels(); }
 function loadSave(s) {
-  cur = s; fixBag(s); teller.state = 'idle'; writeSaves(); menuPanel.mesh.visible = false;
+  cur = s; fixBag(s); fixGear(s); teller.state = 'idle'; writeSaves(); menuPanel.mesh.visible = false; applyGear();
   fadeThen(() => {
     game.mode = 'dock'; setWorld('dock');
     placePlayer(DOCK_SPOTS.start.pos, 0); refreshDockPanels();
@@ -1956,19 +2264,17 @@ function drawMenu(p, c) {
   } else if (ui.screen === 'settings') {
     frame(c, W, H, 'SETTINGS', 'Saved automatically');
     const set = (k, v) => { settings[k] = v; writeSettings(); if (master) master.gain.value = settings.vol * 0.6; p.redraw(); };
-    label(c, 'Volume', 120, 210);
-    p.btn('vol-', 470, 165, 90, 64, '-', { on: () => set('vol', Math.max(0, +(settings.vol - 0.1).toFixed(1))) });
-    label(c, `${Math.round(settings.vol * 100)}%`, 655, 210, { align: 'center' });
-    p.btn('vol+', 750, 165, 90, 64, '+', { on: () => set('vol', Math.min(1, +(settings.vol + 0.1).toFixed(1))) });
-    label(c, 'Turning', 120, 310);
-    [['snap30', 'Snap 30°'], ['snap45', 'Snap 45°'], ['smooth', 'Smooth']].forEach(([v, t], i) =>
-      p.btn('turn' + v, 400 + i * 190, 265, 175, 64, t, { sel: settings.turn === v, font: 'bold 28px system-ui,sans-serif', on: () => set('turn', v) }));
-    label(c, 'Move speed', 120, 410);
-    [['slow', 'Slow'], ['normal', 'Normal'], ['fast', 'Fast']].forEach(([v, t], i) =>
-      p.btn('speed' + v, 400 + i * 190, 365, 175, 64, t, { sel: settings.speed === v, font: 'bold 28px system-ui,sans-serif', on: () => set('speed', v) }));
-    label(c, 'Graphics', 120, 500);
-    [['high', 'High'], ['low', 'Low (faster)']].forEach(([v, t], i) =>
-      p.btn('gfx' + v, 400 + i * 285, 455, 270, 64, t, { sel: settings.gfx === v, font: 'bold 28px system-ui,sans-serif', on: () => { set('gfx', v); applyGfx(); } }));
+    const row = (name, y) => label(c, name, 120, y + 40, { font: 'bold 30px system-ui,sans-serif' });
+    const opt = (key, id, list, y, w = 175, gap = 190, after) => list.forEach(([v, t], i) =>
+      p.btn(id + v, 400 + i * gap, y, w, 58, t, { sel: settings[key] === v, font: 'bold 26px system-ui,sans-serif', on: () => { set(key, v); if (after) after(); } }));
+    row('Volume', 140);
+    p.btn('vol-', 470, 140, 90, 58, '-', { on: () => set('vol', Math.max(0, +(settings.vol - 0.1).toFixed(1))) });
+    label(c, `${Math.round(settings.vol * 100)}%`, 655, 180, { align: 'center' });
+    p.btn('vol+', 750, 140, 90, 58, '+', { on: () => set('vol', Math.min(1, +(settings.vol + 0.1).toFixed(1))) });
+    row('Turning', 216); opt('turn', 'turn', [['snap30', 'Snap 30°'], ['snap45', 'Snap 45°'], ['smooth', 'Smooth']], 216);
+    row('Move speed', 292); opt('speed', 'speed', [['slow', 'Slow'], ['normal', 'Normal'], ['fast', 'Fast']], 292);
+    row('Water', 368); opt('water', 'water', [['clear', 'Clear'], ['normal', 'Normal'], ['murky', 'Murky']], 368, 175, 190, applyWater);
+    row('Graphics', 444); opt('gfx', 'gfx', [['high', 'High'], ['low', 'Low (faster)']], 444, 270, 285, applyGfx);
     p.btn('back', 40, 556, 220, 62, 'BACK', { on: () => go('main') });
   } else if (ui.screen === 'quit') {
     frame(c, W, H, 'THANKS FOR PLAYING!', 'Your progress is saved. You can close this tab now.');
@@ -1977,7 +2283,7 @@ function drawMenu(p, c) {
 }
 
 // ---- dock panels ----
-const shopPanel = new Panel(1.4, 1.0, 900, drawShop);
+const shopPanel = new Panel(1.4, 1.12, 900, drawShop);
 shopPanel.mesh.position.set(-3.17, DECK_Y + 1.62, -4); shopPanel.mesh.rotation.y = Math.PI / 2;
 const tellerPanel = new Panel(1.4, 1.03, 900, drawTeller);
 tellerPanel.mesh.position.set(3.88, DECK_Y + 1.8, -4.62); tellerPanel.mesh.rotation.y = -Math.PI / 2;
@@ -2005,8 +2311,27 @@ function drawShop(p, c) {
   const W = p.W, H = p.H, bag = cur ? cur.bag : [], sized = bag.filter(m => m.sized), unsized = bag.length - sized.length;
   frame(c, W, H, 'BAIT & GEAR'); coinsBadge(c, W);
   const tab = (id, x, w, t) => p.btn(id, x, 102, w, 54, t, { sel: shopTab === id, font: 'bold 26px system-ui,sans-serif', on: () => { shopTab = id; p.redraw(); } });
-  tab('upgrades', 40, 250, 'UPGRADES'); tab('sell', 306, 300, `SELL FISH (${sized.length})`);
-  if (shopTab === 'upgrades') {
+  tab('upgrades', 40, 220, 'UPGRADES'); tab('gear', 272, 160, 'GEAR'); tab('sell', 444, 280, `SELL FISH (${sized.length})`);
+  if (shopTab === 'gear') { // pole spears and spearguns: buy once, then equip
+    const owned = cur ? cur.gear.owned : ['pole1'], eq = gear().id;
+    GEAR.forEach((G, i) => {
+      const y = 168 + i * 64, has = owned.includes(G.id), afford = !!cur && cur.coins >= G.cost;
+      label(c, G.name, 40, y + 28, { font: 'bold 27px system-ui,sans-serif', color: G.type === 'gun' ? '#ffcf6a' : '#eaf7ff' });
+      label(c, G.desc, 40, y + 54, { color: '#9fd8ea', font: '20px system-ui,sans-serif' });
+      const sw = G.type === 'gun' ? G.body : G.shaft; c.fillStyle = '#' + new THREE.Color(sw).getHexString(); c.fillRect(470, y + 22, 120, 10); // colour swatch
+      c.fillStyle = '#' + new THREE.Color(G.type === 'gun' ? G.accent : G.grip).getHexString(); c.fillRect(560, y + 18, 30, 18);
+      const lbl = G.id === eq ? 'EQUIPPED' : has ? 'EQUIP' : `${G.cost}`;
+      p.btn('gear' + G.id, 680, y + 6, 180, 52, lbl, { sel: G.id === eq, primary: !has && afford, greyed: !has && !afford, font: 'bold 24px system-ui,sans-serif', on: () => {
+        if (!cur) return;
+        if (G.id === eq) return;
+        if (!has) {
+          if (cur.coins < G.cost) return p.toast(`You need ${G.cost - cur.coins} more coins`);
+          cur.coins -= G.cost; cur.gear.owned.push(G.id); sfx.buy(); p.toast(`Bought the ${G.name}!`);
+        }
+        cur.gear.eq = G.id; writeSaves(); applyGear(); refreshDockPanels();
+      } });
+    });
+  } else if (shopTab === 'upgrades') {
     UPGRADES.forEach((u, i) => {
       const y = 172 + i * 112, L = lvl(u.k), maxed = L >= 3, cost = maxed ? 0 : u.cost[L], afford = !!cur && cur.coins >= cost;
       label(c, u.name, 40, y + 36); label(c, u.desc(L), 40, y + 72, { color: '#9fd8ea', font: '24px system-ui,sans-serif' });
@@ -2112,10 +2437,11 @@ function drawDive(p, c) {
 }
 
 // ---- pointer: controller laser in VR, mouse on desktop ----
-const uiRay = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]),
-  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 }));
-uiRay.position.set(0, 0.02, -0.52); handR.add(uiRay); uiRay.visible = false;
-const uiDot = new THREE.Mesh(new THREE.SphereGeometry(0.012, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false, fog: false, toneMapped: false }));
+// a real glowing beam (a thin line is almost invisible in a headset), 1 m long, stretched to the hit point
+const uiRay = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0035, 1, 8, 1, true).rotateX(Math.PI / 2).translate(0, 0, -0.5),
+  new THREE.MeshBasicMaterial({ color: 0x9fe8ff, transparent: true, opacity: 0.85, depthWrite: false, fog: false, toneMapped: false }));
+uiRay.renderOrder = 29; uiRay.position.set(0, 0.02, -0.52); handR.add(uiRay); uiRay.visible = false;
+const uiDot = new THREE.Mesh(new THREE.SphereGeometry(0.02, 14, 10), new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false, fog: false, toneMapped: false }));
 uiDot.renderOrder = 30; scene.add(uiDot); uiDot.visible = false;
 function uiUpdate() {
   const list = (game.mode === 'menu' ? [menuPanel] : game.mode === 'dock' ? dockPanels : []).filter(p => p.mesh.visible);
@@ -2174,7 +2500,7 @@ function drawWrist() {
   $('hAir').textContent = fmtAir(game.air); $('hAirBar').style.width = (f * 100) + '%';
   $('hAirBar').style.background = f > 0.4 ? '#3ee07a' : f > 0.2 ? '#ffc040' : '#ff4040';
   $('hLion').textContent = game.lion; $('hFish').textContent = game.fish;
-  $('hSpear').textContent = spear.state === 'loaded' ? 'READY' : spear.state.toUpperCase();
+  $('hSpear').textContent = ({ loaded: 'READY', cocking: 'PULLING BACK', thrust: 'SHOT!', return: 'RETURNING', holding: 'FISH ON TIP' })[spear.state] || spear.state;
   $('hTip').textContent = game.mode === 'menu' ? 'Click the menu with the mouse (VR: aim the laser + trigger)'
     : game.mode === 'dock' ? 'WASD walk · click panels · Esc menu' : 'Enter / B: swim back up';
 }
@@ -2199,6 +2525,8 @@ function tick() {
     if (game.state === 'playing') {
       if (pressed('right', 'trigger')) fire();
       if (pressed('right', 'b')) endDive('surface');
+      if (pressed('left', 'grip')) dropTube();
+      if (pressed('left', 'b')) recallTube();
       if (pressed('left', 'trigger') && game.sonarCd <= 0) { game.sonar = 4; game.sonarCd = sonarCooldown(); sfx.sonar(); buzz('left', 0.5, 120); }
       game.air -= dt; if (game.air <= 0) { game.air = 0; endDive('air'); }
     } else if (game.state === 'surfacing') {
@@ -2207,13 +2535,18 @@ function tick() {
     if (pressed('left', 'a')) { game.light = !game.light; lamp.visible = game.light; }
     game.sonar -= dt; game.sonarCd = Math.max(0, game.sonarCd - dt); game.stingCd -= dt;
     updateSpear(dt);
+    updateTube(dt);
     updateFish(dt, elapsed);
     updateParticles(dt);
     waterDome.position.copy(head);
     // breathing bubbles
     game.breath -= dt;
     if (game.breath <= 0) { game.breath = rand(3.5, 5); camera.getWorldDirection(_v1); emitBubbles(_v4.copy(head).addScaledVector(_v1, 0.12).add(_v2.set(0, -0.12, 0)), 14, 0.04, 0.6); sfx.bubble(); }
-    for (const r of rays) r.material.opacity = 0.05 + 0.03 * Math.sin(elapsed * 0.6 + r.userData.ph);
+    for (const r of rays) { // light shafts stay around you as you explore
+      r.material.opacity = 0.05 + 0.03 * Math.sin(elapsed * 0.6 + r.userData.ph);
+      if (Math.hypot(r.position.x - head.x, r.position.z - head.z) > 26) r.position.set(head.x + rand(-20, 20), 7.5, head.z + rand(-20, 20));
+    }
+    zoneCheck(dt);
     surfaceTex.offset.set(elapsed * 0.01, elapsed * 0.006);
   } else {
     updateSpear(dt); // keeps the spear sitting on the gun
@@ -2383,7 +2716,8 @@ function showcaseTube() {
   const P = new THREE.Vector3(0, -0.02, -0.7).applyMatrix4(camera.matrixWorld);          // where the tube's middle floats
   // opening faces you, swinging side to side so you also see the print
   const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.35 + 0.15 * Math.sin(elapsed * 0.5), Math.PI + 1.25 * Math.sin(elapsed * 0.45), 0, 'YXZ'));
-  handL.children[0].visible = false; // hide the controller grip
+  handL.getObjectByName('gripL').visible = false; // hide the controller grip
+  if (arms.left) arms.left.visible = false;       // and the arm, so only the tube shows
   rig.getWorldQuaternion(_q2).invert(); handL.quaternion.copy(_q2).multiply(q);
   const mid = new THREE.Vector3(0, 0, (TUBE.open + TUBE.back) / 2).applyQuaternion(q);
   handL.position.copy(rig.worldToLocal(P.sub(mid)));
@@ -2391,12 +2725,12 @@ function showcaseTube() {
 }
 
 // start: dock in the background, main menu in front of you
-setWorld('dock'); applyGfx();
+setWorld('dock'); applyGfx(); applyWater(); applyGear();
 placePlayer(DOCK_SPOTS.start.pos, 0);
 openMenu('main');
 if (SHOWCASE) { menuPanel.mesh.visible = false; game.mode = 'showcase'; $('emu').classList.add('min'); }
 renderer.setAnimationLoop(tick);
-window.reef = { game, spear, fishes, tick, input, emu, handR, head, mouseNdc, look, ui, saves: () => saves, cur: () => cur, panels, startDive, endDive, openMenu, render: () => renderer.render(scene, camera), handL, loadSave, createSave }; // debug hook
+window.reef = { game, spear, fishes, tick, input, emu, handR, head, mouseNdc, look, ui, saves: () => saves, cur: () => cur, panels, startDive, endDive, openMenu, render: () => renderer.render(scene, camera), handL, loadSave, createSave, arms, tubeFree, tubeG }; // debug hook
 </script>
 </body>
 </html>
