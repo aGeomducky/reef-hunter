@@ -5,7 +5,16 @@ A spearfishing game for Meta Quest 3 that runs in the browser (WebXR).
 Spear invasive lionfish and reef fish, stuff them into your containment tube, get them sized by Sal at the Weigh Station, and sell them at the Bait & Gear shop for upgrades.
 
 ## The ocean
-A big bounded area with five zones: Home Reef, Kelp Forest, Coral Garden, The Drop-off and the Shipwreck.
+A big bounded area with seven zones: Home Reef, Kelp Forest, Coral Garden, The Drop-off, the Shipwreck, Seagrass Meadow and Rocky Pinnacles. Most reef fish live around rocks and hide behind them when you get close.
+
+## Sea life
+You can spear: Lionfish (invasive), Blue Tang, Snapper, Parrotfish, Grouper, Clownfish, Pufferfish, Flounder (lies flat on the sand), Moray Eel (lurks at the base of rocks) and Mandarinfish (Coral Garden only, rare).
+Protected, can't be speared: Seahorses in the Seagrass Meadow.
+Just passing by: Hammerhead sharks and a Manta ray.
+
+## Spearguns
+After a shot the spear stays out on its rope: pull it in (hold A, or grab the rope with your left hand and pull).
+Then reload: grab the front of the gun with your left hand and pull the bands back (or hold A).
 
 ## Gear (Bait & Gear shop)
 Pole spears: Fiberglass (free), Aluminum (150), Carbon (500), Pro Carbon (1200).
@@ -30,3 +39,5 @@ Run `node serve.js` and open http://localhost:8080. Without a headset you get th
 
 ## Credits
 Arms model: `models/arms_low_poly.fbx` (low poly rigged arms).
+Underwater ambience: `sounds/underwater-ambience.mp3` (freesound_community, "underwater ambience").
+Fish models: `models/fish/` from the 3D Fish Pack by polyy.ai (CC0), made lighter for the Quest with `tools/shrink-fish.html`.
