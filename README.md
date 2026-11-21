@@ -29,12 +29,13 @@ Run `node serve.js` and open http://localhost:8080. Without a headset you get th
 ## Controls (VR)
 - Right trigger: hold to pull the pole spear back, let go to shoot / click menus
 - Push a speared fish into the containment tube in your left hand
-- B: menu (dock) / swim back up (dive)
+- Left menu button (≡) or B (computer: Esc or M): menu, shown on your left hand in VR. In a dive it pauses: resume, settings, view & spear (field of view, height, spear hand, spear length, glove colour), or surface (asks "are you sure?" first). Swimming up to the surface asks too.
+- Left-handed mode (View & Spear → Spear hand: Left): the spear goes in your left hand and the tube in your right; all buttons swap with them
 - Left stick: walk / swim
 - Right stick: turn, up / down
 - Left trigger: lionfish sonar
 - X: dive light
-- Left grip: drop the containment tube
+- Left grip: let go of the containment tube / grab it again (any way you hold it, it stays that way)
 - Y: call the tube back to your hand
 
 ## Credits

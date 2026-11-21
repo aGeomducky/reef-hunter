@@ -155,7 +155,7 @@ const ENV_DOCK = gradientEnv(0x3d8fd6, 0xdcefff, 0x2a5a6a, new THREE.Vector3(-0.
 const ENV_REEF = gradientEnv(0x6fc4f2, 0x1462a8, 0x041a34, new THREE.Vector3(0, 1, 0), 2);
 
 const scene = new THREE.Scene();
-const WATER = new THREE.Color(0x0b4f8c); // deep ocean blue (the fog colour)
+const WATER = new THREE.Color(0x073a68); // deep ocean blue (the fog colour)
 scene.background = WATER;
 scene.fog = new THREE.FogExp2(WATER, 0.05);
 
@@ -196,7 +196,7 @@ float caust(vec2 p){ vec2 i=p; float c=1.0; float inten=0.005;
 
 // ================= seabed =================
 // ---- the open ocean: a big bounded area with 5 zones to explore ----
-const WORLD_R = 170;
+const WORLD_R = 250; // swimmable radius (m): the zones sit in the middle, open reef and sand all around them
 const ZONES = [
   { name: 'Home Reef',       c: [0, 0],      r: 34 },
   { name: 'Kelp Forest',     c: [95, -70],   r: 34 },
@@ -217,7 +217,7 @@ function floorH(x, z) {
   return h;
 }
 {
-  const g = new THREE.PlaneGeometry(360, 360, 220, 220); g.rotateX(-Math.PI / 2);
+  const g = new THREE.PlaneGeometry(540, 540, 300, 300); g.rotateX(-Math.PI / 2);
   // big colour patches across the seafloor: damp darker sand, a green algae film, pinkish crushed shell
   const p = g.attributes.position, col = new Float32Array(p.count * 3), c = new THREE.Color();
   const damp = new THREE.Color(0.78, 0.76, 0.72), algae = new THREE.Color(0.82, 0.95, 0.78), shell = new THREE.Color(1.04, 0.94, 0.92);
@@ -247,7 +247,7 @@ function floorH(x, z) {
     }
     for (let i = 0; i < 400; i++) { x.fillStyle = `rgba(${40 + rand(0, 40) | 0},${35 + rand(0, 30) | 0},${30 + rand(0, 20) | 0},${rand(0.4, 0.9)})`; x.beginPath(); x.arc(rand(0, w), rand(0, h), rand(0.6, 1.6), 0, 6.28); x.fill(); }
   });
-  sand.wrapS = sand.wrapT = THREE.RepeatWrapping; sand.repeat.set(180, 180); sand.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  sand.wrapS = sand.wrapT = THREE.RepeatWrapping; sand.repeat.set(270, 270); sand.anisotropy = renderer.capabilities.getMaxAnisotropy();
   const mat = new THREE.MeshStandardMaterial({ map: sand, bumpMap: sand, bumpScale: 1.6, vertexColors: true, roughness: 0.95 });
   addCaustics(mat, true);
   reefRoot.add(new THREE.Mesh(g, mat));
@@ -257,10 +257,11 @@ function floorH(x, z) {
 const SPAWN = new THREE.Vector3(0, 1.0, 9);
 const rocks = [];       // {c: Vector3, r}
 const rockTops = [];    // homes for lionfish
+const nooks = [];       // shady gaps under rock overhangs: lionfish live in them, reef fish dart into them to hide
 {
   const rockGeos = [], coralGeos = [];
   const hash = (x, y, z) => { const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453; return s - Math.floor(s); };
-  const placeRock = (x, z, s) => {
+  const placeRock = (x, z, s, dims = null) => { // dims (optional): exact { sx, sy, sz, y, ry } for built shapes like caves
     const dSpawn = Math.hypot(x - SPAWN.x, z - SPAWN.z); // keep the start area clear
     if (dSpawn < 5) { const k = 5 / Math.max(dSpawn, 0.01); x = SPAWN.x + (x - SPAWN.x) * k; z = SPAWN.z + (z - SPAWN.z) * k; }
     // lumpy natural rock: a finer shape pushed in and out by layered noise, flat-ish underneath,
@@ -281,10 +282,11 @@ const rockTops = [];    // homes for lionfish
       cols.set([c.r, c.g, c.b], i * 3);
     }
     g.setAttribute('color', new THREE.BufferAttribute(cols, 3)); g.computeVertexNormals();
-    const sy = s * rand(0.5, 1.1), sx = s * rand(0.8, 1.4), sz = s * rand(0.8, 1.4);
-    const y = floorH(x, z) + sy * 0.25;
-    rockGeos.push(g.toNonIndexed().applyMatrix4(M([x, y, z], [rand(-0.2, 0.2), rand(0, 6), rand(-0.2, 0.2)], [sx, sy, sz])));
-    rocks.push({ c: new THREE.Vector3(x, y, z), r: Math.min(sx, sy, sz) * 0.95 });
+    const sy = dims ? dims.sy : s * rand(0.5, 1.1), sx = dims ? dims.sx : s * rand(0.8, 1.4), sz = dims ? dims.sz : s * rand(0.8, 1.4);
+    const y = dims ? dims.y : floorH(x, z) + sy * 0.25, ry = dims && dims.ry != null ? dims.ry : rand(0, 6.28);
+    rockGeos.push(g.toNonIndexed().applyMatrix4(M([x, y, z], [rand(-0.06, 0.06), ry, rand(-0.06, 0.06)], [sx, sy, sz])));
+    // ex = the rock's real half-size on each axis (plus its lumps), ry = its turn; used to keep fish and you out of it
+    rocks.push({ c: new THREE.Vector3(x, y, z), r: Math.min(sx, sy, sz) * 0.95, ex: new THREE.Vector3(sx, sy, sz).multiplyScalar(1.15), ry });
     rockTops.push(new THREE.Vector3(x, y + sy * 0.9, z));
     return { x, z, top: y + sy * 0.85, s: Math.max(sx, sz) };
   };
@@ -343,7 +345,20 @@ const rockTops = [];    // homes for lionfish
       for (let j = 0; j < corals; j++) addCoral(R.x + rand(-R.s, R.s) * 0.5, R.top - 0.1, R.z + rand(-R.s, R.s) * 0.5, rand(0.8, 1.3));
     }
   };
+  // a cave: two boulders with a flat slab across the top, leaving a dark gap underneath you can look into
+  const cave = (x, z, s = 1) => {
+    if (Math.hypot(x - SPAWN.x, z - SPAWN.z) < 7) return;
+    const a = rand(0, 6.28), dx = Math.cos(a) * 1.5 * s, dz = Math.sin(a) * 1.5 * s, fy = floorH(x, z);
+    for (const k of [1, -1]) { const px = x + dx * k, pz = z + dz * k; placeRock(px, pz, 0, { sx: 0.9 * s * rand(0.9, 1.1), sy: 1.1 * s, sz: 0.9 * s * rand(0.9, 1.1), y: floorH(px, pz) + 0.4 * s }); }
+    const slab = placeRock(x, z, 0, { sx: 2.1 * s, sy: 0.42 * s, sz: 1.4 * s, y: fy + 1.45 * s, ry: -a });
+    for (let j = 0; j < 2; j++) addCoral(slab.x + rand(-0.8, 0.8) * s, slab.top - 0.05, slab.z + rand(-0.6, 0.6) * s, rand(0.8, 1.2));
+    const gap = new THREE.Vector3(x, fy + 0.45 * s, z); gap.nook = true; gap.s = s;
+    nooks.push(gap); rockTops.push(gap, gap); // lionfish love to hang in the shade under ledges
+  };
   const [HOME, KELP, GARDEN, DROP, WRECK, MEADOW, PINNACLES] = ZONES;
+  for (let i = 0; i < 9; i++) { const a = rand(0, 6.28), d = rand(8, 28); cave(Math.cos(a) * d, Math.sin(a) * d, rand(0.9, 1.3)); }
+  for (const [Z, n] of [[GARDEN, 9], [KELP, 5], [PINNACLES, 6], [DROP, 6]]) for (let i = 0; i < n; i++) { const [x, z] = inZone(Z, Z.r * 0.8); cave(x, z, rand(0.9, 1.4)); }
+  for (let i = 0; i < 30; i++) { const a = rand(0, 6.28), d = rand(40, WORLD_R - 20); cave(Math.cos(a) * d, Math.sin(a) * d, rand(0.8, 1.4)); }
   // Rocky Pinnacles: tall towers of stacked boulders reaching up toward the surface
   for (let k = 0; k < 9; k++) {
     const [x, z] = inZone(PINNACLES, 24); let y0 = floorH(x, z), s = rand(2.2, 3);
@@ -355,23 +370,23 @@ const rockTops = [];    // homes for lionfish
       y0 += s * 0.9; s *= rand(0.7, 0.85);
     }
   }
-  for (let i = 0; i < 20; i++) { const [x, z] = inZone(PINNACLES); placeRock(x, z, rand(0.5, 1.5)); }
+  for (let i = 0; i < 12; i++) { const [x, z] = inZone(PINNACLES); placeRock(x, z, rand(0.5, 1.5)); }
   // Seagrass Meadow: open grass (added with the kelp below) with a few small coral heads
   for (let i = 0; i < 25; i++) { const [x, z] = inZone(MEADOW); if (Math.random() < 0.4) placeRock(x, z, rand(0.4, 1)); else addCoral(x, floorH(x, z), z, rand(0.6, 1)); }
   // Home Reef: rocky patches with coral on top
-  for (let k = 0; k < 9; k++) { const a = rand(0, 6.28), d = rand(5, 25); cluster(Math.cos(a) * d, Math.sin(a) * d, 6, 3); }
-  for (let i = 0; i < 14; i++) { const a = rand(0, 6.28), d = rand(3, 28); placeRock(Math.cos(a) * d, Math.sin(a) * d, rand(0.4, 1.4)); }
+  for (let k = 0; k < 9; k++) { const a = rand(0, 6.28), d = rand(5, 25); cluster(Math.cos(a) * d, Math.sin(a) * d, 4, 4); }
+  for (let i = 0; i < 7; i++) { const a = rand(0, 6.28), d = rand(3, 28); placeRock(Math.cos(a) * d, Math.sin(a) * d, rand(0.4, 1.4)); }
   for (let i = 0; i < 70; i++) { const a = rand(0, 6.28), d = rand(2, 28), x = Math.cos(a) * d, z = Math.sin(a) * d; if (Math.hypot(x - SPAWN.x, z - SPAWN.z) > 2.5) addCoral(x, floorH(x, z), z, rand(0.7, 1.2)); }
   // Coral Garden: packed with coral
-  for (let k = 0; k < 22; k++) { const [x, z] = inZone(GARDEN, 28); cluster(x, z, 4, 7, 2.5); }
+  for (let k = 0; k < 20; k++) { const [x, z] = inZone(GARDEN, 28); cluster(x, z, 3, 8, 2.5); }
   for (let i = 0; i < 420; i++) { const [x, z] = inZone(GARDEN); addCoral(x, floorH(x, z), z, rand(0.8, 1.6)); }
   // Kelp Forest: a few boulders (the kelp itself is added below)
-  for (let i = 0; i < 14; i++) { const [x, z] = inZone(KELP); placeRock(x, z, rand(0.8, 2.2)); }
+  for (let i = 0; i < 9; i++) { const [x, z] = inZone(KELP); placeRock(x, z, rand(0.8, 2.2)); }
   // The Drop-off: a wall of big boulders along the edge, scattered rocks below
   for (let x = -46; x <= 46; x += rand(3, 5)) { const z = 94 + rand(-2, 2); const R = placeRock(x, z, rand(2, 3.6)); if (Math.random() < 0.6) addCoral(R.x, R.top - 0.2, R.z, rand(1, 1.6)); }
   for (let i = 0; i < 30; i++) { const [x, z] = inZone(DROP, 30); if (z > 99) cluster(x, z, 2, 2, 2, [1, 2.6]); }
   // between the zones: scattered rocks and coral heads so the open sand isn't empty
-  for (let i = 0; i < 150; i++) { const a = rand(0, 6.28), d = rand(30, WORLD_R - 12), x = Math.cos(a) * d, z = Math.sin(a) * d; if (Math.random() < 0.5) placeRock(x, z, rand(0.5, 1.8)); else addCoral(x, floorH(x, z), z, rand(0.7, 1.3)); }
+  for (let i = 0; i < 340; i++) { const a = rand(0, 6.28), d = rand(30, WORLD_R - 12), x = Math.cos(a) * d, z = Math.sin(a) * d; if (Math.random() < 0.3) placeRock(x, z, rand(0.5, 1.8)); else addCoral(x, floorH(x, z), z, rand(0.7, 1.3)); }
   // Shipwreck: an old sunken boat lying tilted in the sand, covered in growth (lionfish love wrecks)
   {
     const wx = WRECK.c[0], wz = WRECK.c[1], wy = floorH(wx, wz), rot = 0.6, rust = 0xb07a4e, moss = 0x7f9a5a;
@@ -536,7 +551,7 @@ const rockTops = [];    // homes for lionfish
 // deep-water backdrop: bright toward the surface, dark blue below
 const waterDome = new THREE.Mesh(new THREE.SphereGeometry(120, 32, 16), new THREE.ShaderMaterial({
   side: THREE.BackSide, depthWrite: false, fog: false,
-  uniforms: { top: { value: new THREE.Color(0x3fa8e6) }, hor: { value: WATER }, bot: { value: new THREE.Color(0x02122e) } },
+  uniforms: { top: { value: new THREE.Color(0x2a80bc) }, hor: { value: WATER }, bot: { value: new THREE.Color(0x020c22) } },
   vertexShader: 'varying vec3 vD; void main(){ vD = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: `uniform vec3 top; uniform vec3 hor; uniform vec3 bot; varying vec3 vD;
 void main(){ float h = vD.y; vec3 c = h > 0.0 ? mix(hor, top, pow(h, 0.8)) : mix(hor, bot, pow(-h, 0.6));
@@ -551,7 +566,7 @@ const rays = [];
 {
   const alpha = canvasTex(4, 64, (x, w, h) => { const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#fff'); g.addColorStop(1, '#000'); x.fillStyle = g; x.fillRect(0, 0, w, h); });
   alpha.colorSpace = THREE.NoColorSpace;
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < 0; i++) { // (the light beams were removed: set a count here to bring them back)
     const m = new THREE.Mesh(new THREE.CylinderGeometry(0.4, rand(1.8, 3), 16, 12, 1, true),
       new THREE.MeshBasicMaterial({ color: 0xc8f4ff, alphaMap: alpha, transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
     m.position.set(rand(-20, 20), 7.5, rand(-20, 20)); m.rotation.set(rand(-0.15, 0.15), 0, rand(-0.15, 0.25));
@@ -963,6 +978,31 @@ function nearRock(minD, maxD) { // a rock (or bit of wreck) for a reef fish to l
   for (let t = 0; t < 40; t++) { const r = rocks[Math.random() * rocks.length | 0], d = r.c.distanceTo(fishCenter); if (d >= minD && d <= maxD) return r; if (Math.abs(d - maxD) < bd) { bd = Math.abs(d - maxD); best = r; } }
   return best;
 }
+// keep a point outside every rock (each rock is treated as its real stretched, turned shape + a margin).
+// Returns true if it had to be pushed out.
+const _rp = new THREE.Vector3();
+function rockPush(p, margin) {
+  let moved = false;
+  for (const rk of rocks) {
+    const dx = p.x - rk.c.x, dz = p.z - rk.c.z, ex = rk.ex;
+    if (rk.big === undefined) rk.big = ex ? Math.max(ex.x, ex.y, ex.z) : rk.r;
+    const reach = rk.big + margin;
+    if (dx * dx + dz * dz > reach * reach || Math.abs(p.y - rk.c.y) > reach) continue;
+    if (!ex) { // simple round rock (the wreck)
+      const d = p.distanceTo(rk.c), min = rk.r + margin;
+      if (d < min) { _rp.subVectors(p, rk.c); if (_rp.lengthSq() < 1e-6) _rp.set(0, 1, 0); p.copy(rk.c).addScaledVector(_rp.normalize(), min); moved = true; }
+      continue;
+    }
+    const c = Math.cos(rk.ry), s = Math.sin(rk.ry); // into the rock's own (unturned) frame
+    const lx = c * dx - s * dz, lz = s * dx + c * dz, ly = p.y - rk.c.y;
+    const ax = ex.x + margin, ay = ex.y + margin, az = ex.z + margin;
+    const q = Math.sqrt((lx / ax) ** 2 + (ly / ay) ** 2 + (lz / az) ** 2);
+    if (q >= 1) continue;
+    const k = q < 1e-4 ? 0 : 1 / q, nx = q < 1e-4 ? 0 : lx * k, ny = q < 1e-4 ? ay : ly * k, nz = q < 1e-4 ? 0 : lz * k;
+    p.set(rk.c.x + c * nx + s * nz, rk.c.y + ny, rk.c.z - s * nx + c * nz); moved = true;
+  }
+  return moved;
+}
 function relocateFish(f) { // a fish far behind you reappears somewhere ahead, out of sight
   if (f.sp.zone) return; // zone fish stay home; they're there when you swim back
   if (f.sp.bottom) { f.g.position.copy(floorPoint(fishCenter, 20, 38)); pickTarget(f); }
@@ -1032,7 +1072,8 @@ function floorPoint(near, minD, maxD) { // a spot on the sand for a flounder to 
 }
 function pickTarget(f) {
   const sp = f.sp;
-  if (sp.hover) { const k = sp.zone ? 0.4 : 1; f.target.copy(f.home).add(_v1.set(rand(-1.3, 1.3) * k, rand(sp.zone ? -0.1 : 0.2, sp.zone ? 0.3 : 1.2), rand(-1.3, 1.3) * k)); f.retarget = rand(4, 9); }
+  if (sp.hover && f.home && f.home.nook) { f.target.copy(f.home).add(_v1.set(rand(-0.4, 0.4), rand(-0.1, 0.15), rand(-0.4, 0.4))); f.retarget = rand(5, 10); } // stays in the shade of its cave
+  else if (sp.hover) { const k = sp.zone ? 0.4 : 1; f.target.copy(f.home).add(_v1.set(rand(-1.3, 1.3) * k, rand(sp.zone ? -0.1 : 0.2, sp.zone ? 0.3 : 1.2), rand(-1.3, 1.3) * k)); f.retarget = rand(4, 9); }
   else if (sp.bottom) { f.target.copy(f.g.position); f.retarget = rand(20, 40); } // lies still on the sand
   else if (sp.lurk && f.rock) { // pokes out from the base of its rock, never far
     const rk = f.rock, a = rand(0, 6.28), x = rk.c.x + Math.cos(a) * (rk.r + 0.1), z = rk.c.z + Math.sin(a) * (rk.r + 0.1);
@@ -1154,7 +1195,7 @@ function buildGun(G) {
 }
 // left hand: lionfish containment tube. Opaque tube, white at the opening fading to red,
 // with a funnel of soft rubber flaps on top. Push the fish through the flaps to stow it.
-const TUBE = { R: 0.075, open: -0.52, back: -0.04 };
+const TUBE = { R: 0.13, open: -0.66, back: -0.04 }; // 26 cm wide, 62 cm long
 const tubeFlaps = [];
 const tubeG = new THREE.Group(); handL.add(tubeG); // the whole tube, so it can be dropped and picked back up
 let tubeRim;
@@ -1206,7 +1247,7 @@ let tubeRim;
   const funnelMat = new THREE.MeshStandardMaterial({ color: 0xf2cf1d, map: holeTex, roughness: 0.45, side: THREE.DoubleSide });
   const greyMat = new THREE.MeshStandardMaterial({ color: 0xb4b8bb, roughness: 0.5 });
   // inner funnel: a clear cone a little way inside, narrowing to a small hole so fish can't get back out
-  const fz = TUBE.open + 0.07, fLen = 0.09, holeR = R * 0.28;
+  const fz = TUBE.open + 0.07, fLen = 0.09, holeR = R * 0.5;
   const funnel = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.94, holeR, fLen, 32, 1, true).rotateX(-Math.PI / 2), funnelMat);
   funnel.position.z = fz + fLen / 2; funnel.renderOrder = 2;
   const fRing = new THREE.Mesh(new THREE.TorusGeometry(R * 0.94, 0.005, 6, 32), greyMat); fRing.position.z = fz;
@@ -1231,7 +1272,7 @@ let tubeRim;
 const TUBE_HOLD = new THREE.Matrix4();
 {
   const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2 - 0.25, 0, 0)); // tube's +Z (into it) points down
-  const openAt = new THREE.Vector3(0, 0.05, -0.085);                                         // opening just beside the grip
+  const openAt = new THREE.Vector3(0, 0.05, -0.14);                                        // opening just beside the grip
   TUBE_HOLD.compose(openAt.clone().sub(new THREE.Vector3(0, 0, TUBE.open).applyQuaternion(q)), q, new THREE.Vector3(1, 1, 1));
 }
 const applyTubeHold = () => TUBE_HOLD.decompose(tubeG.position, tubeG.quaternion, tubeG.scale);
@@ -1300,6 +1341,7 @@ new FBXLoader(armManager).load('models/arms_low_poly.fbx', obj => {
     (hand === 'left' ? handL : handR).add(holder); arms[hand] = holder;
   }
   handL.getObjectByName('gripL').visible = false; // hide the placeholder controller grip
+  applyHands();
 }, undefined, () => {}); // if the model can't load, the game simply runs without arms
 
 // spear
@@ -1434,10 +1476,11 @@ const sfx = {
 };
 
 // ================= input =================
-const BTN = ['trigger', 'grip', 'a', 'b'];
+const BTN = ['trigger', 'grip', 'a', 'b', 'menu'];
 const mkIn = () => ({ trigger: false, grip: false, a: false, b: false, sx: 0, sy: 0, prev: {} });
 const input = { left: mkIn(), right: mkIn() };
 const pressed = (h, b) => input[h][b] && !input[h].prev[b];
+const menuPressed = () => pressed('left', 'menu') || pressed('right', 'menu'); // the menu (≡) button, whichever hand it ends up on
 const xrSrc = { left: null, right: null };
 const xrCtrls = [0, 1].map(i => {
   const c = renderer.xr.getController(i);
@@ -1461,11 +1504,14 @@ function pollInput(dt) {
     xrSrc.left = xrSrc.right = null;
     for (const c of xrCtrls) {
       const src = c.userData.src; if (!src || !src.gamepad) continue;
-      const h = src.handedness; if (h !== 'left' && h !== 'right') continue;
+      let h = src.handedness; if (h !== 'left' && h !== 'right') continue;
+      if (settings.hand === 'left') h = h === 'left' ? 'right' : 'left'; // left-handed mode: the two controllers swap jobs
       xrSrc[h] = src; const hand = h === 'left' ? handL : handR;
       hand.position.copy(c.position); hand.quaternion.copy(c.quaternion);
       const gp = src.gamepad, I = input[h], b = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
       I.trigger = b(0); I.grip = b(1); I.a = b(4); I.b = b(5);
+      // the left controller's menu (≡) button: browsers that pass it on list it after the face buttons
+      I.menu = false; for (let i = 6; i < gp.buttons.length; i++) if (b(i)) I.menu = true;
       const ax = gp.axes.length >= 4 ? [gp.axes[2], gp.axes[3]] : [gp.axes[0] || 0, gp.axes[1] || 0];
       I.sx = Math.abs(ax[0]) > 0.12 ? ax[0] : 0; I.sy = Math.abs(ax[1]) > 0.12 ? ax[1] : 0;
     }
@@ -1475,7 +1521,7 @@ function pollInput(dt) {
     L.sx = clamp(eL.stick.x + k('KeyD') - k('KeyA'), -1, 1); L.sy = clamp(eL.stick.y + k('KeyS') - k('KeyW'), -1, 1);
     R.sx = clamp(eR.stick.x + k('KeyE') - k('KeyQ'), -1, 1); R.sy = clamp(eR.stick.y + k('KeyC') + k('ControlLeft') - k('Space'), -1, 1);
     R.trigger = !!eR.ptr.trigger || !!k('KeyF') || mouseFire; R.grip = !!eR.ptr.grip || !!k('KeyG'); R.a = !!eR.ptr.a || !!k('KeyR'); R.b = !!eR.ptr.b || !!k('Enter') || !!k('Escape');
-    L.trigger = !!eL.ptr.trigger || !!k('KeyZ'); L.grip = !!eL.ptr.grip || !!k('KeyT'); L.a = !!eL.ptr.a || !!k('KeyX'); L.b = !!eL.ptr.b || !!k('KeyY');
+    L.trigger = !!eL.ptr.trigger || !!k('KeyZ'); L.grip = !!eL.ptr.grip || !!k('KeyT'); L.a = !!eL.ptr.a || !!k('KeyX'); L.b = !!eL.ptr.b || !!k('KeyY'); L.menu = !!k('KeyM');
     look.yaw -= (k('ArrowRight') - k('ArrowLeft')) * dt * 1.8;
     look.pitch = clamp(look.pitch + (k('ArrowUp') - k('ArrowDown')) * dt * 1.5, -1.4, 1.4);
   }
@@ -1510,7 +1556,7 @@ function emuHands(dt = 0) {
     _m1.lookAt(_v4.set(0, 0, 0), aim.clone().negate(), Math.abs(aim.y) > 0.98 ? new THREE.Vector3(1, 0, 0) : UP); _q1.setFromRotationMatrix(_m1); // tube +Z = aim
     const tubePos = opening.clone().sub(new THREE.Vector3(0, 0, TUBE.open).applyQuaternion(_q1));
     // ...then work out where the hand must be so the tube (held by its top) ends up there
-    const handW = new THREE.Matrix4().compose(tubePos, _q1, new THREE.Vector3(1, 1, 1)).multiply(new THREE.Matrix4().copy(TUBE_HOLD).invert());
+    const handW = new THREE.Matrix4().compose(tubePos, _q1, new THREE.Vector3(1, 1, 1)).multiply(new THREE.Matrix4().compose(tubeG.position, tubeG.quaternion, tubeG.scale).invert()); // works for any grab
     const hp = new THREE.Vector3(), hq = new THREE.Quaternion(); handW.decompose(hp, hq, _s1);
     rig.getWorldQuaternion(_q2).invert(); handL.quaternion.copy(_q2.multiply(hq)); handL.position.copy(rig.worldToLocal(hp));
     // each click shoves the gun forward
@@ -1540,13 +1586,36 @@ const store = {
 let saves = store.get(SAVE_KEY, []);
 if (!Array.isArray(saves)) saves = [];
 let cur = null; // the save being played
-const settings = Object.assign({ vol: 0.8, turn: 'snap30', speed: 'normal', gfx: 'high', water: 'normal' }, store.get(SET_KEY, {}));
+const settings = Object.assign({ vol: 0.8, turn: 'snap30', speed: 'normal', gfx: 'high', water: 'normal', fov: 60, height: 0, spear: 'normal', hand: 'right', glove: 'grey' }, store.get(SET_KEY, {}));
 const WATER_FOG = { clear: 0.042, normal: 0.056, murky: 0.075 };       // how far you can see underwater
 function applyWater() { reefFog.density = WATER_FOG[settings.water] || 0.03; }
 function applyGfx() { // Low = no shadows and lower resolution, for more speed
   const low = settings.gfx === 'low';
   if (!renderer.xr.isPresenting) renderer.setPixelRatio(low ? 1 : Math.min(devicePixelRatio, 2));
   sun.castShadow = !low && dockRoot.visible;
+}
+// view & spear: field of view (computer only, a headset sets its own), your height, and how long the pole spear is
+const SPEAR_LEN = { short: 0.65, normal: 0.8, long: 1.0 };
+const POLE_LEN = POLE.backZ - POLE.tipZ; // full-size pole: 1.74 m
+const spearLen = () => settings.spearLen ?? SPEAR_LEN[settings.spear] ?? 0.8; // the slider's exact value, else the old Short/Normal/Long pick
+// left-handed mode: your left controller holds the spear, your right holds the tube. The arm models swap too,
+// so the arm you see on each side is the right one.
+function applyHands() {
+  if (!arms.left || !arms.right) return;
+  const lh = settings.hand === 'left';
+  (lh ? handR : handL).add(arms.left); (lh ? handL : handR).add(arms.right);
+}
+// colour of your gloves (or bare skin)
+const GLOVES = {
+  grey: { n: 'Grey', c: 0xc4c8cc }, black: { n: 'Black', c: 0x2a2d33 }, blue: { n: 'Blue', c: 0x2f6fd6 },
+  yellow: { n: 'Yellow', c: 0xf2c418 }, red: { n: 'Red', c: 0xd0352b }, skin: { n: 'Skin', c: 0xd9a27e },
+};
+function applyView() {
+  applyHands();
+  { const g = GLOVES[settings.glove] || GLOVES.grey, m = armMats[1]; m.color.set(g.c); m.bumpScale = settings.glove === 'skin' ? 0.15 : 1; m.roughness = settings.glove === 'skin' ? 0.6 : 0.85; }
+  camera.fov = settings.fov; camera.updateProjectionMatrix();
+  if (!renderer.xr.isPresenting) camera.position.y = 1.6 + settings.height;
+  pole.scale.z = spearLen();
 }
 const writeSaves = () => { if (cur) cur.last = Date.now(); store.set(SAVE_KEY, saves); };
 const writeSettings = () => store.set(SET_KEY, settings);
@@ -1624,13 +1693,13 @@ function startDive() {
   if (!cur) return;
   fadeThen(() => {
     game.mode = 'dive'; setWorld('reef'); teller.state = 'idle'; zoneNow = null;
-    Object.assign(game, { state: 'playing', maxAir: maxAir(), lion: 0, fish: 0, diveCoins: 0, stingCd: 0, sonar: 0, sonarCd: 0 });
+    Object.assign(game, { state: 'playing', paused: false, maxAir: maxAir(), lion: 0, fish: 0, diveCoins: 0, stingCd: 0, sonar: 0, sonarCd: 0 });
     game.air = game.maxAir;
     cur.stats.dives++; writeSaves();
     resetSpear(); resetTube(); populate();
     placePlayer(SPAWN, 0); sfx.splash();
     showMsg(['DIVE!', 'Spear the invasive LIONFISH (worth the most)', "Don't touch their spines: they sting!",
-             'Hold trigger: pull back · let go: shoot · L trigger: sonar', 'L grip: drop tube · Y: tube back · B: swim up'], 7);
+             'Hold trigger: pull back · let go: shoot · L trigger: sonar', 'L grip: grab / let go of tube · Y: tube back · ≡ or B: menu'], 7);
   });
 }
 function endDive(reason) {
@@ -1681,7 +1750,10 @@ function applyGear() {
   resetSpear();
 }
 // how far in front of your right hand a speared fish sits while you carry it (for the desktop tube helper)
-const stowDist = () => (gear().type === 'gun' ? gear().len + 0.07 : -POLE.tipZ - POLE.holdOff - 0.05);
+// while you hold a speared fish it slides down the shaft to this far in front of your right hand,
+// so the tube in your left hand can reach it without stretching your arms wide apart
+const STOW_REACH = 0.4;
+const stowDist = () => STOW_REACH;
 const _sd1 = new THREE.Vector3(), _sd2 = new THREE.Vector3();
 function segDist(p0, p1, c) { // distance from point c to the line segment p0-p1 (own temp vectors, so callers can pass any)
   const d = _sd1.subVectors(p1, p0), l2 = d.lengthSq();
@@ -1746,7 +1818,12 @@ function fishOnSpear() { // speared fish sits just behind the tip
   if (!spear.fish) return;
   const inFlight = gear().type === 'gun' && spear.state !== 'loaded' && spear.state !== 'holding';
   (inFlight ? spearG.getWorldQuaternion(_q1) : handR.getWorldQuaternion(_q1)); _v1.set(0, 0, -1).applyQuaternion(_q1);
-  spear.fish.g.position.copy(spearTip).addScaledVector(_v1, -0.12);
+  const onTip = _v2.copy(spearTip).addScaledVector(_v1, -0.12);
+  if (spear.state === 'holding') { // slide the fish down the shaft toward your hand
+    spear.slide = Math.min(1, (spear.slide || 0) + 0.06);
+    handR.getWorldPosition(_v3).addScaledVector(_v1, STOW_REACH);
+    spear.fish.g.position.lerpVectors(onTip, _v3, spear.slide * spear.slide * (3 - 2 * spear.slide));
+  } else { spear.slide = 0; spear.fish.g.position.copy(onTip); }
 }
 // speargun: the spear flies out on a line, sticks in a fish (or rock), then reels back to the gun
 function updateGun(dt) {
@@ -1821,7 +1898,7 @@ function startHolding() {
   const f = spear.fish;
   spear.state = 'holding';
   // bigger / taller fish (and spiky lionfish) take more shoves to stuff through the flaps
-  stow.need = 0.12 + 0.25 * Math.pow(f.sp.h * f.size / 0.15, 1.6) * (f.sp.lion ? 1.3 : 1);
+  stow.need = clamp(0.1 + 0.07 * Math.pow(f.sp.h * f.size / 0.15, 1.2), 0.1, 0.28); // metres of pushing: one good shove for most fish
   stow.progress = 0; stow.prevD = null;
   if (!stow.hinted) {
     stow.hinted = true;
@@ -1833,13 +1910,13 @@ function stowUpdate(dt) {
   tubeG.updateMatrixWorld(true);
   const O = _v1.set(0, 0, TUBE.open).applyMatrix4(tubeG.matrixWorld);           // centre of the opening
   const A = _v2.set(0, 0, 1).transformDirection(tubeG.matrixWorld);              // direction into the tube
+  // the fish only has to be roughly over the opening (any angle), then pushing it deeper counts
   const rel = _v3.subVectors(f.g.position, O), d = rel.dot(A), radial = rel.addScaledVector(A, -d).length();
-  const tRel = _v4.subVectors(spearTip, O), dTip = tRel.dot(A), radTip = tRel.addScaledVector(A, -dTip).length();
-  const lined = radial < TUBE.R * 1.4 && radTip < TUBE.R * 1.4;
+  const lined = radial < TUBE.R * 1.8 && d > -0.12 && d < 0.4;
   stow.open = 0; stow.sq -= dt;
-  if (lined && dTip > -0.05) {
-    stow.open = clamp(dTip / 0.12, 0, 1);
-    if (stow.prevD != null && d > -0.03 && d < 0.14) {
+  if (lined) {
+    stow.open = clamp((d + 0.12) / 0.15, 0, 1);
+    if (stow.prevD != null) {
       const gain = d - stow.prevD;
       if (gain > 0.0005) {
         stow.progress += gain / stow.need;
@@ -1849,10 +1926,10 @@ function stowUpdate(dt) {
       }
     }
     stow.prevD = d;
-    const k = clamp((d + 0.03) / 0.12, 0, 1); f.g.scale.set(f.size * (1 - 0.45 * k), f.size * (1 - 0.45 * k), f.size); // squeezed by the flaps
+    const k = clamp((d + 0.05) / 0.15, 0, 1); f.g.scale.set(f.size * (1 - 0.45 * k), f.size * (1 - 0.45 * k), f.size); // squeezed by the flaps
   } else {
     stow.prevD = null; f.g.scale.setScalar(f.size);
-    stow.progress = Math.max(0, stow.progress - 0.12 * dt);
+    stow.progress = Math.max(0, stow.progress - 0.05 * dt);
   }
   if (stow.progress >= 1) { // it's in!
     const at = O.clone();
@@ -1876,7 +1953,18 @@ function dropTube() {
   if (tubeFree.state !== 'hand' || game.mode !== 'dive') return;
   reefRoot.attach(tubeG); tubeFree.state = 'dropped'; tubeFree.vel.set(0, -0.15, 0);
   buzz('left', 0.4, 60); tone('sine', 300, 180, 0.12, 0.12);
-  popup('Tube dropped · Y to call it back', tubeG.getWorldPosition(new THREE.Vector3()).add(_v1.set(0, 0.25, 0)), '#bff3ff');
+  popup('Tube let go · grip near it to grab · Y calls it back',tubeG.getWorldPosition(new THREE.Vector3()).add(_v1.set(0, 0.25, 0)), '#bff3ff');
+}
+// left grip: let go of the tube, or grab it again however your hand meets it (any angle, any part of the tube).
+// It stays in your hand exactly the way you grabbed it.
+function gripTube() {
+  if (tubeFree.state === 'hand') return dropTube();
+  tubeG.updateMatrixWorld(true); handL.getWorldPosition(_lh);
+  const a = _v1.set(0, 0, TUBE.open).applyMatrix4(tubeG.matrixWorld), b = _v2.set(0, 0, TUBE.back).applyMatrix4(tubeG.matrixWorld);
+  if (segDist(a, b, _lh) < TUBE.R + 0.18) {
+    handL.attach(tubeG); tubeFree.state = 'hand';
+    buzz('left', 0.6, 60); tone('sine', 520, 640, 0.08, 0.1);
+  } else if (tubeFree.state === 'dropped') popup('Reach the tube to grab it · Y calls it back', _lh.clone().add(_v1.set(0, 0.2, 0)), '#bff3ff');
 }
 function recallTube() {
   if (tubeFree.state !== 'dropped') return;
@@ -1955,7 +2043,7 @@ function walkDock(dt) { // walk on the dock / beach only
   const dx = walkVel.x * dt, dz = walkVel.z * dt;
   if (walkable(head.x + dx, head.z)) rig.position.x += dx;
   if (walkable(head.x, head.z + dz)) rig.position.z += dz;
-  rig.position.y = DECK_Y + (renderer.xr.isPresenting ? floorFix : 0);
+  rig.position.y = DECK_Y + (renderer.xr.isPresenting ? floorFix + settings.height : 0);
   rig.updateMatrixWorld(true); camera.getWorldPosition(head);
 }
 function locomotion(dt) {
@@ -1972,11 +2060,9 @@ function locomotion(dt) {
   const rEdge = WORLD_R - 6;
   if (r > rEdge) { const k = (r - rEdge) / r; rig.position.x -= head.x * k; rig.position.z -= head.z * k; }
   const minY = floorH(head.x, head.z) + 0.4; if (head.y < minY) rig.position.y += minY - head.y;
-  if (head.y > 14) rig.position.y -= head.y - 14;
-  for (const rk of rocks) { // don't swim into rocks
-    const d = head.distanceTo(rk.c), min = rk.r + 0.35;
-    if (d < min) { _v4.subVectors(head, rk.c).setLength(min - d); rig.position.add(_v4); head.add(_v4); }
-  }
+  if (head.y > 14.5) rig.position.y -= head.y - 14.5;
+  _v4.copy(head); // don't swim into rocks (their real shape, so you can still swim into the caves)
+  if (rockPush(_v4, 0.3)) { rig.position.add(_v4.sub(head)); head.add(_v4); }
   rig.updateMatrixWorld(true); camera.getWorldPosition(head);
 }
 const handPosL = new THREE.Vector3(), handPosR = new THREE.Vector3();
@@ -2014,8 +2100,14 @@ function updateFish(dt, t) {
       f.target.copy(p).addScaledVector(_v3.normalize(), rand(3, 6)); f.target.y = floorH(f.target.x, f.target.z) + 0.04; f.retarget = 4;
     }
     if (homeRock && !sp.hover && !sp.lurk && dh < 5.5) { // a diver is close: dart behind the home rock / into the coral, on the side away from you
-      const rk = homeRock; _v3.subVectors(rk.c, head).setY(0); if (_v3.lengthSq() < 1e-4) _v3.set(1, 0, 0); _v3.normalize();
-      tgt = _v1.copy(rk.c).addScaledVector(_v3, rk.r + 0.35); tgt.y = Math.max(rk.c.y - rk.r * 0.2, floorH(tgt.x, tgt.z) + 0.3); hiding = true;
+      let nook = null, nd = 8; // a cave close by? dart into it
+      for (const n of nooks) { const d = n.distanceTo(p); if (d < nd && n.distanceTo(head) > 1.2) { nd = d; nook = n; } }
+      if (nook) { tgt = _v1.copy(nook).add(_v3.set(f.offset.x * 0.4, f.offset.y * 0.2, f.offset.z * 0.4)); hiding = true; }
+      else { // otherwise behind the home rock, on the side away from you
+        const rk = homeRock; _v3.subVectors(rk.c, head).setY(0); if (_v3.lengthSq() < 1e-4) _v3.set(1, 0, 0); _v3.normalize();
+        const far = rk.ex ? Math.max(rk.ex.x, rk.ex.z) : rk.r;
+        tgt = _v1.copy(rk.c).addScaledVector(_v3, far + 0.35); tgt.y = Math.max(rk.c.y - rk.r * 0.2, floorH(tgt.x, tgt.z) + 0.3); hiding = true;
+      }
     } else if (f.school) tgt = _v1.copy(f.school.target).add(f.offset);
     else { f.retarget -= dt; if (f.retarget < 0 || p.distanceTo(f.target) < 0.6) pickTarget(f); tgt = f.target; }
     const des = _v2.subVectors(tgt, p), dl = des.length();
@@ -2037,6 +2129,7 @@ function updateFish(dt, t) {
     const r = Math.hypot(p.x, p.z), rb = WORLD_R - 10; if (r > rb) { des.x -= p.x / r * (r - rb) * 2; des.z -= p.z / r * (r - rb) * 2; }
     f.vel.lerp(des, 1 - Math.exp(-dt * (1.4 + panic * 4)));
     p.addScaledVector(f.vel, dt);
+    if (rockPush(p, Math.min(f.r * 0.5, 0.6))) f.vel.multiplyScalar(0.6); // slide around rocks, never through them
     if (sp.hover) { // hover: gentle bob and slow drifting turns
       const ph = f.offset.x * 5;
       p.y += 0.05 * Math.cos(t * 0.8 + ph) * dt;
@@ -2087,10 +2180,10 @@ function setWorld(w) {
   const reef = w === 'reef';
   reefRoot.visible = reef; dockRoot.visible = !reef;
   if (reef) {
-    renderer.toneMappingExposure = 1.1;
+    renderer.toneMappingExposure = 0.82; // darker under water
     scene.background = WATER; scene.fog = reefFog; scene.environment = ENV_REEF; sun.castShadow = false; sun.target.position.set(0, 0, 0);
-    hemi.color.set(0xa8ecff); hemi.groundColor.set(0x4a3c28); hemi.intensity = 1.3;
-    sun.color.set(0xc8f6ff); sun.intensity = 1.6; sun.position.set(6, 20, 4); lamp.visible = game.light;
+    hemi.color.set(0x9ad8f0); hemi.groundColor.set(0x3a3020); hemi.intensity = 1.0;
+    sun.color.set(0xc0eeff); sun.intensity = 1.2; sun.position.set(6, 20, 4); lamp.visible = game.light;
   } else {
     scene.background = SKY_HORIZON; scene.fog = dockFog;
     hemi.color.set(0xdff2ff); hemi.groundColor.set(0x9a8a66); hemi.intensity = 1.1;
@@ -2530,7 +2623,16 @@ class Panel {
     c.textBaseline = 'alphabetic';
     this.buttons.push({ id, x, y, w, h, on: o.on });
   }
-  hitAt(uv) { const px = uv.x * this.W, py = (1 - uv.y) * this.H; return this.buttons.find(b => px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) || null; }
+  // a slider: click anywhere on it, or hold the trigger / mouse and drag. t = 0..1, onSet(t) gets the new value
+  slider(id, x, y, w, t, onSet) {
+    const c = this.ctx, hov = this.hover === id, h = 58, ty = y + h / 2, kx = x + 20 + t * (w - 40);
+    c.fillStyle = '#0b3242'; c.beginPath(); c.roundRect(x + 20, ty - 7, w - 40, 14, 7); c.fill();
+    c.fillStyle = '#ffb020'; c.beginPath(); c.roundRect(x + 20, ty - 7, kx - x - 20, 14, 7); c.fill();
+    c.fillStyle = hov ? '#ffffff' : '#ffcb55'; c.beginPath(); c.arc(kx, ty, hov ? 22 : 19, 0, 6.28); c.fill();
+    c.strokeStyle = '#1a1000'; c.lineWidth = 3; c.stroke();
+    this.buttons.push({ id, x, y, w, h, drag: true, on: () => onSet(clamp((this.lastPx - x - 20) / (w - 40), 0, 1)) });
+  }
+  hitAt(uv) { const px = uv.x * this.W, py = (1 - uv.y) * this.H; this.lastPx = px; return this.buttons.find(b => px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) || null; }
 }
 let frameAlpha = 0.93;
 function frame(c, W, H, title, sub) {
@@ -2547,12 +2649,29 @@ const menuPanel = new Panel(1.6, 1.0, 1024, drawMenu); scene.add(menuPanel.mesh)
 menuPanel.mesh.material.depthTest = false; menuPanel.mesh.renderOrder = 25; menuPanel.solid = true; // always on top, not see-through
 function go(screen) { ui.screen = screen; ui.confirmDel = -1; menuPanel.note = ''; menuPanel.redraw(); }
 function placeMenu() {
+  const m = menuPanel.mesh;
+  if (renderer.xr.isPresenting) { // VR: the menu sits just above your left hand, tilted toward you; point at it with the right hand
+    if (m.parent !== handL) handL.add(m);
+    m.position.set(0, 0.17, 0.03); m.rotation.set(-0.55, 0, 0); m.scale.setScalar(0.27); // about 43 x 27 cm
+    return;
+  }
+  if (m.parent !== scene) scene.add(m);
+  m.scale.setScalar(1);
   rig.updateMatrixWorld(true); camera.getWorldPosition(head);
   camera.getWorldDirection(_v1); _v1.y = 0; if (_v1.lengthSq() < 1e-4) _v1.set(0, 0, -1); _v1.normalize();
   menuPanel.mesh.position.copy(head).addScaledVector(_v1, 1.9); menuPanel.mesh.position.y = head.y - 0.08;
   menuPanel.mesh.lookAt(head.x, menuPanel.mesh.position.y, head.z);
 }
 function openMenu(screen = 'main') { game.mode = 'menu'; walkVel.set(0, 0, 0); go(screen); placeMenu(); menuPanel.mesh.visible = true; }
+// pause menu during a dive (B in VR, Esc / Enter on the computer): the dive freezes, air too
+function pauseDive() { game.paused = true; swimVel.set(0, 0, 0); go('pause'); placeMenu(); menuPanel.mesh.visible = true; }
+function resumeDive() { game.paused = false; menuPanel.mesh.visible = false; }
+// swimming up to the top asks if you want to surface (same "are you sure?" as the menu's SURFACE button)
+function askSurface() { pauseDive(); go('surface'); }
+function keepDiving() {
+  resumeDive();
+  if (head.y > 13) { rig.position.y -= 1.2; swimVel.set(0, 0, 0); } // sink back down a bit so it doesn't ask again right away
+}
 function closeMenu() { menuPanel.mesh.visible = false; game.mode = 'dock'; refreshDockPanels(); }
 function loadSave(s) {
   cur = s; fixBag(s); fixGear(s); teller.state = 'idle'; writeSaves(); menuPanel.mesh.visible = false; applyGear();
@@ -2618,7 +2737,48 @@ function drawMenu(p, c) {
     row('Move speed', 292); opt('speed', 'speed', [['slow', 'Slow'], ['normal', 'Normal'], ['fast', 'Fast']], 292);
     row('Water', 368); opt('water', 'water', [['clear', 'Clear'], ['normal', 'Normal'], ['murky', 'Murky']], 368, 175, 190, applyWater);
     row('Graphics', 444); opt('gfx', 'gfx', [['high', 'High'], ['low', 'Low (faster)']], 444, 270, 285, applyGfx);
-    p.btn('back', 40, 556, 220, 62, 'BACK', { on: () => go('main') });
+    p.btn('back', 40, 556, 220, 62, 'BACK', { on: () => go(game.paused ? 'pause' : 'main') });
+    p.btn('toView', 600, 556, 384, 62, 'VIEW & SPEAR  >', { primary: true, font: 'bold 30px system-ui,sans-serif', on: () => go('view') });
+  } else if (ui.screen === 'view') {
+    frame(c, W, H, 'VIEW & SPEAR', 'Saved automatically');
+    const set = (k, v) => { settings[k] = v; writeSettings(); applyView(); p.redraw(); };
+    const row = (name, y, sub) => { label(c, name, 90, y + 36, { font: 'bold 30px system-ui,sans-serif' }); if (sub) label(c, sub, 90, y + 62, { color: '#9fd8ea', font: '20px system-ui,sans-serif' }); };
+    const stepper = (key, y, step, min, max, text) => {
+      p.btn(key + '-', 470, y, 90, 58, '-', { on: () => set(key, Math.max(min, +(settings[key] - step).toFixed(2))) });
+      label(c, text(settings[key]), 655, y + 40, { align: 'center' });
+      p.btn(key + '+', 750, y, 90, 58, '+', { on: () => set(key, Math.min(max, +(settings[key] + step).toFixed(2))) });
+    };
+    row('Field of view', 132, 'computer screen only'); stepper('fov', 132, 5, 40, 100, v => `${v}°`);
+    row('Your height', 200, 'raise or lower yourself'); stepper('height', 200, 0.05, -0.6, 0.6, v => `${v > 0 ? '+' : ''}${Math.round(v * 100)} cm`);
+    row('Spear hand', 268, 'left = spear in your left hand');
+    [['right', 'Right hand'], ['left', 'Left hand']].forEach(([v, t], i) =>
+      p.btn('hand' + v, 400 + i * 285, 268, 270, 54, t, { sel: settings.hand === v, font: 'bold 26px system-ui,sans-serif', on: () => set('hand', v) }));
+    // pole spear length: slider (any length) with quick picks underneath
+    const len = spearLen(), LMIN = 0.5, LMAX = 1.2;
+    row('Pole spear length', 336, `${(POLE_LEN * len).toFixed(2)} m long`);
+    p.slider('spearSlide', 380, 336, 600, (len - LMIN) / (LMAX - LMIN), t => { settings.spearLen = +(LMIN + t * (LMAX - LMIN)).toFixed(2); writeSettings(); applyView(); p.redraw(); });
+    [['short', 'Short'], ['normal', 'Normal'], ['long', 'Long']].forEach(([v, t], i) =>
+      p.btn('spear' + v, 400 + i * 190, 400, 175, 50, t, { sel: Math.abs(len - SPEAR_LEN[v]) < 0.005, font: 'bold 26px system-ui,sans-serif', on: () => { settings.spearLen = SPEAR_LEN[v]; set('spear', v); } }));
+    // glove colour: round swatches you click
+    row('Gloves', 466, (GLOVES[settings.glove] || GLOVES.grey).n);
+    Object.entries(GLOVES).forEach(([k, g], i) => {
+      const x = 400 + i * 96, sel = settings.glove === k;
+      p.btn('glove' + k, x, 466, 84, 62, '', { sel, on: () => set('glove', k) });
+      c.fillStyle = '#' + new THREE.Color(g.c).getHexString(); c.beginPath(); c.arc(x + 42, 497, 22, 0, 6.28); c.fill();
+      c.strokeStyle = sel ? '#1a1000' : '#eaf7ff'; c.lineWidth = 3; c.stroke();
+    });
+    p.btn('back', 40, 556, 220, 62, 'BACK', { on: () => go('settings') });
+  } else if (ui.screen === 'pause') {
+    frame(c, W, H, 'PAUSED', 'The dive is on hold');
+    p.btn('resume', 312, 160, 400, 84, 'RESUME', { primary: true, on: resumeDive });
+    p.btn('settings', 312, 262, 400, 70, 'SETTINGS', { on: () => go('settings') });
+    p.btn('view', 312, 348, 400, 70, 'VIEW & SPEAR', { on: () => go('view') });
+    p.btn('surface', 312, 434, 400, 70, 'SURFACE (end dive)', { danger: true, on: () => go('surface') });
+  } else if (ui.screen === 'surface') {
+    frame(c, W, H, 'ARE YOU SURE?', 'Surfacing ends this dive');
+    label(c, `Your fish this dive: ${game.lion} lionfish, ${game.fish} other fish (they're kept)`, W / 2, 230, { align: 'center', color: '#9fd8ea', font: '28px system-ui,sans-serif' });
+    p.btn('surfaceYes', 132, 300, 360, 90, 'YES, SURFACE', { danger: true, on: () => { resumeDive(); endDive('surface'); } });
+    p.btn('surfaceNo', 532, 300, 360, 90, 'NO, KEEP DIVING', { primary: true, on: keepDiving });
   } else if (ui.screen === 'quit') {
     frame(c, W, H, 'THANKS FOR PLAYING!', 'Your progress is saved. You can close this tab now.');
     p.btn('back', 312, 300, 400, 72, 'BACK TO MENU', { on: () => go('main') });
@@ -2787,7 +2947,7 @@ uiRay.renderOrder = 29; uiRay.position.set(0, 0.02, -0.52); handR.add(uiRay); ui
 const uiDot = new THREE.Mesh(new THREE.SphereGeometry(0.02, 14, 10), new THREE.MeshBasicMaterial({ color: 0xffb020, depthTest: false, fog: false, toneMapped: false }));
 uiDot.renderOrder = 30; scene.add(uiDot); uiDot.visible = false;
 function uiUpdate() {
-  const list = (game.mode === 'menu' ? [menuPanel] : game.mode === 'dock' ? dockPanels : []).filter(p => p.mesh.visible);
+  const list = (game.mode === 'menu' || game.paused ? [menuPanel] : game.mode === 'dock' ? dockPanels : []).filter(p => p.mesh.visible);
   let hit = null;
   if (list.length) {
     if (renderer.xr.isPresenting) { uiRay.getWorldPosition(_v1); _v2.set(0, 0, -1).applyQuaternion(handR.getWorldQuaternion(_q1)); raycaster.set(_v1, _v2); }
@@ -2799,6 +2959,7 @@ function uiUpdate() {
   uiRay.visible = renderer.xr.isPresenting && list.length > 0; if (uiRay.visible) uiRay.scale.z = hit ? Math.max(0.05, hit.distance) : 4;
   for (const p of panels) { const want = p === hp && hb ? hb.id : null; if (p.hover !== want) { p.hover = want; p.redraw(); } }
   if (pressed('right', 'trigger') && hb && hb.on) { audio(); sfx.click(); buzz('right', 0.3, 30); hb.on(); }
+  else if (input.right.trigger && hb && hb.drag) hb.on(); // keep dragging a slider while the trigger is held
 }
 
 // ---- fade to black between places (comfortable in VR) ----
@@ -2847,7 +3008,7 @@ function drawWrist() {
   $('hLion').textContent = game.lion; $('hFish').textContent = game.fish;
   $('hSpear').textContent = ({ loaded: 'READY', cocking: 'PULLING BACK', thrust: 'SHOT!', return: 'RETURNING', holding: 'FISH ON TIP', flying: 'SHOT!', stuck: 'HIT', out: 'PULL ROPE IN', unloaded: 'RELOAD' })[spear.state] || spear.state;
   $('hTip').textContent = game.mode === 'menu' ? 'Click the menu with the mouse (VR: aim the laser + trigger)'
-    : game.mode === 'dock' ? 'WASD walk · click panels · Esc menu' : 'Enter / B: swim back up';
+    : game.mode === 'dock' ? 'WASD walk · click panels · Esc menu' : 'Esc / B: menu (swim up, settings)';
 }
 
 // ================= main loop =================
@@ -2857,7 +3018,7 @@ let elapsed = 0;
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.05); elapsed += dt; timeU.value = elapsed;
   pollInput(dt);
-  const diving = game.mode === 'dive';
+  const paused = game.mode === 'dive' && game.paused, diving = game.mode === 'dive' && !paused;
   if (diving && game.state === 'playing') locomotion(dt);
   else if (game.mode === 'dock' && !fade.phase) walkDock(dt);
   else { turn(dt); camera.getWorldPosition(head); }
@@ -2870,8 +3031,9 @@ function tick() {
   if (diving) {
     if (game.state === 'playing') {
       if (pressed('right', 'trigger')) fire();
-      if (pressed('right', 'b')) endDive('surface');
-      if (pressed('left', 'grip') && !leftOnGun()) dropTube(); // (left grip near the gun's rope/bands grabs them instead)
+      if (pressed('right', 'b') || menuPressed()) pauseDive();
+      else if (head.y >= 14.4) askSurface(); // reached the surface
+      if (pressed('left', 'grip') && !leftOnGun()) gripTube(); // (left grip near the gun's rope/bands grabs them instead)
       if (pressed('left', 'b')) recallTube();
       if (pressed('left', 'trigger') && game.sonarCd <= 0) { game.sonar = 4; game.sonarCd = sonarCooldown(); sfx.sonar(); buzz('left', 0.5, 120); }
       game.air -= dt; if (game.air <= 0) { game.air = 0; endDive('air'); }
@@ -2897,11 +3059,15 @@ function tick() {
     }
     zoneCheck(dt);
     surfaceTex.offset.set(elapsed * 0.01, elapsed * 0.006);
+  } else if (paused) {
+    if (!fade.phase) uiUpdate(); // click the pause menu
+    if (menuPressed()) resumeDive(); // the menu button toggles the pause menu
+    else if (pressed('right', 'b')) { if (ui.screen === 'pause') resumeDive(); else go(ui.screen === 'view' ? 'settings' : 'pause'); }
   } else {
     updateSpear(dt); // keeps the spear sitting on the gun
     if (!fade.phase) uiUpdate(); else { uiDot.visible = false; uiRay.visible = false; }
-    if (game.mode === 'dock' && pressed('right', 'b')) openMenu('main');
-    else if (game.mode === 'menu' && pressed('right', 'b') && cur && ui.screen === 'main') closeMenu();
+    if (game.mode === 'dock' && (pressed('right', 'b') || menuPressed())) openMenu('main');
+    else if (game.mode === 'menu' && (pressed('right', 'b') || menuPressed()) && cur && ui.screen === 'main') closeMenu();
     tellerUpdate(dt);
     animateDock(dt, elapsed);
     if ((gullT -= dt) <= 0) { gullT = rand(7, 18); sfx.gull(); } // seagulls over the dock
@@ -2970,7 +3136,7 @@ function buildEmu() {
 function syncEmuUI() {
   for (const hand of ['left', 'right']) {
     const E = emu[hand], I = input[hand];
-    for (const b of BTN) { const on = I[b]; if (E.btnEls[b].__on !== on) { E.btnEls[b].classList.toggle('on', on); E.btnEls[b].__on = on; } }
+    for (const b of BTN) { const on = I[b]; if (!E.btnEls[b]) continue; if (E.btnEls[b].__on !== on) { E.btnEls[b].classList.toggle('on', on); E.btnEls[b].__on = on; } }
     E.knob.setAttribute('transform', `translate(${(I.sx * 6).toFixed(2)},${(I.sy * 6).toFixed(2)})`);
   }
 }
@@ -3047,15 +3213,15 @@ async function initVR() {
 renderer.xr.addEventListener('sessionstart', () => {
   vrBtn.textContent = 'EXIT VR'; renderer.xr.setFoveation(1);
   rig.rotation.set(0, look.yaw, 0); look.yaw = 0; look.pitch = 0; camera.rotation.set(0, 0, 0);
-  if (game.mode === 'dock' || game.mode === 'menu') rig.position.y = DECK_Y + floorFix;
-  if (game.mode === 'menu') ui.placeT = 0.6; // re-place the menu once the headset pose is known
+  if (game.mode === 'dock' || game.mode === 'menu') rig.position.y = DECK_Y + floorFix + settings.height;
+  if (game.mode === 'menu' || game.paused) placeMenu(); // menus go onto your left hand in VR
 });
 renderer.xr.addEventListener('sessionend', () => {
-  vrBtn.textContent = 'ENTER VR'; camera.position.set(0, 1.6, 0); camera.quaternion.identity();
+  vrBtn.textContent = 'ENTER VR'; camera.position.set(0, 1.6 + settings.height, 0); camera.quaternion.identity();
   if (floorFix && (game.mode === 'dock' || game.mode === 'menu')) rig.position.y -= floorFix;
   floorFix = 0;
   look.yaw = rig.rotation.y; look.pitch = 0; rig.rotation.set(0, 0, 0); camera.rotation.set(0, look.yaw, 0, 'YXZ');
-  if (game.mode === 'menu') placeMenu();
+  if (game.mode === 'menu' || game.paused) placeMenu(); // the hand menu goes back to floating in front of you
 });
 initVR();
 
@@ -3076,12 +3242,12 @@ function showcaseTube() {
 }
 
 // start: dock in the background, main menu in front of you
-setWorld('dock'); applyGfx(); applyWater(); applyGear();
+setWorld('dock'); applyGfx(); applyWater(); applyGear(); applyView();
 placePlayer(DOCK_SPOTS.start.pos, 0);
 openMenu('main');
 if (SHOWCASE) { menuPanel.mesh.visible = false; game.mode = 'showcase'; $('emu').classList.add('min'); }
 renderer.setAnimationLoop(tick);
-window.reef = { game, spear, fishes, tick, input, emu, handR, head, mouseNdc, look, ui, saves: () => saves, cur: () => cur, panels, startDive, endDive, openMenu, render: () => renderer.render(scene, camera), handL, loadSave, createSave, arms, tubeFree, tubeG }; // debug hook
+window.reef = { renderer, placeMenu, menuPanel, pauseDive, settings, rocks, nooks, ui, go, game, spear, fishes, tick, input, emu, handR, head, mouseNdc, look, ui, saves: () => saves, cur: () => cur, panels, startDive, endDive, openMenu, render: () => renderer.render(scene, camera), handL, loadSave, createSave, arms, tubeFree, tubeG }; // debug hook
 </script>
 </body>
 </html>
